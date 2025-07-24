@@ -1,0 +1,15 @@
+[package]
+name = "dartminhash"
+version = "0.1.0"
+edition = "2024"
+authors = ["jianshuzhao@yahoo.com"]
+repository = "https://github.com/jianshu93/dartminhash-rs.git"
+keywords = ["MinHash", "Weighted Jaccard", "Sketching"]
+license = "MIT OR Apache-2.0"
+description = "Fast Sketching for Weighted Sets"
+
+[dependencies]
+
+tab-hash = "0.3"
+mt19937 = "3.1"
+rand_core = "0.9.3"
