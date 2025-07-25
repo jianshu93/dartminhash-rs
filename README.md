@@ -3,7 +3,7 @@
 </div>
 
 # DartMinHash: Fast Sketching for Weighted Sets
-This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1) algorithm for estimation of weighted Jaccard similarity. 
+This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (2).
 
 
 # Usage
@@ -47,3 +47,5 @@ fn main() {
 
 # References
 Christiani, T., 2020. Dartminhash: Fast sketching for weighted sets. arXiv preprint arXiv:2005.11547.
+
+Pǎtraşcu, M. and Thorup, M., 2012. The power of simple tabulation hashing. Journal of the ACM (JACM), 59(3), pp.1-50.
