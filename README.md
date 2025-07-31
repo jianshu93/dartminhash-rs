@@ -3,7 +3,7 @@
 </div>
 
 # DartMinHash: Fast Sketching for Weighted Sets
-This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (2). Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
+This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (2). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
 
 # Install & test
 Add to your Cargo.toml. Official release in crates.io will come soon.
