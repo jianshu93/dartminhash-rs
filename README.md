@@ -15,6 +15,26 @@ Test case to evaulate the accurace of the algorithm
 ```bash
 cargo test --release dartminhash_approximates_weighted_jaccard -- --nocapture
 ```
+Test for true weighted Jaccard from 0.005 to 0.8. Output:
+
+```bash
+true weighted Jaccard: 0.81818181818183
+estimated weighted Jaccard: 0.8203125
+true weighted Jaccard: 0.5384615384615511
+estimated weighted Jaccard: 0.53515625
+true weighted Jaccard: 0.3333333333333311
+estimated weighted Jaccard: 0.334228515625
+true weighted Jaccard: 0.17647058823529124
+estimated weighted Jaccard: 0.1806640625
+true weighted Jaccard: 0.05263157894736854
+estimated weighted Jaccard: 0.052734375
+true weighted Jaccard: 0.02564102564102568
+estimated weighted Jaccard: 0.025390625
+true weighted Jaccard: 0.005025125628140737
+estimated weighted Jaccard: 0.0048828125
+
+
+```
 
 # Usage
 

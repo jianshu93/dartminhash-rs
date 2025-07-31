@@ -130,7 +130,7 @@ mod tests {
         // data size and mass
         let l0 = 50_000;      // number of nonzeros
         let l1 = 10_000.0;    // total weight (approximately)
-        let k  = 2048;      // sketch size
+        let k  = 4096;      // sketch size
 
         let dm = DartMinHash::new_mt(&mut rng, k);
 
