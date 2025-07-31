@@ -11,7 +11,7 @@ Add to your Cargo.toml. Official release in crates.io will come soon.
 dartminhash = { git = "https://github.com/jianshu93/dartminhash-rs.git" }
 ```
 
-Test case to evaulate the accurace of the algorithm
+Test case to evaulate the accuracy of the algorithm
 ```bash
 cargo test --release dartminhash_approximates_weighted_jaccard -- --nocapture
 ```
