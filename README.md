@@ -18,21 +18,42 @@ cargo test --release dartminhash_approximates_weighted_jaccard -- --nocapture
 Test for true weighted Jaccard from 0.005 to 0.8. Output:
 
 ```bash
-true weighted Jaccard: 0.81818181818183
-estimated weighted Jaccard: 0.8203125
-true weighted Jaccard: 0.5384615384615511
-estimated weighted Jaccard: 0.53515625
+true weighted Jaccard: 0.9801980198019941
+estimated weighted Jaccard: 0.98046875
+true weighted Jaccard: 0.9230769230769282
+estimated weighted Jaccard: 0.921142578125
+true weighted Jaccard: 0.8691588785046781
+estimated weighted Jaccard: 0.872802734375
+true weighted Jaccard: 0.8181818181818195
+estimated weighted Jaccard: 0.8193359375
+true weighted Jaccard: 0.7391304347825998
+estimated weighted Jaccard: 0.73876953125
+true weighted Jaccard: 0.6666666666666655
+estimated weighted Jaccard: 0.67138671875
+true weighted Jaccard: 0.5999999999999979
+estimated weighted Jaccard: 0.6025390625
+true weighted Jaccard: 0.5384615384615447
+estimated weighted Jaccard: 0.53662109375
+true weighted Jaccard: 0.48148148148148356
+estimated weighted Jaccard: 0.484619140625
+true weighted Jaccard: 0.42857142857142844
+estimated weighted Jaccard: 0.4267578125
+true weighted Jaccard: 0.37931034482758635
+estimated weighted Jaccard: 0.37060546875
 true weighted Jaccard: 0.3333333333333311
-estimated weighted Jaccard: 0.334228515625
-true weighted Jaccard: 0.17647058823529124
-estimated weighted Jaccard: 0.1806640625
+estimated weighted Jaccard: 0.336181640625
+true weighted Jaccard: 0.25000000000000155
+estimated weighted Jaccard: 0.245361328125
+true weighted Jaccard: 0.17647058823529352
+estimated weighted Jaccard: 0.17626953125
+true weighted Jaccard: 0.11111111111111141
+estimated weighted Jaccard: 0.109130859375
 true weighted Jaccard: 0.05263157894736854
-estimated weighted Jaccard: 0.052734375
-true weighted Jaccard: 0.02564102564102568
-estimated weighted Jaccard: 0.025390625
-true weighted Jaccard: 0.005025125628140737
-estimated weighted Jaccard: 0.0048828125
-
+estimated weighted Jaccard: 0.05224609375
+true weighted Jaccard: 0.02564102564102588
+estimated weighted Jaccard: 0.026123046875
+true weighted Jaccard: 0.005025125628140735
+estimated weighted Jaccard: 0.004638671875
 
 ```
 

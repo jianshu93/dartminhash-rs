@@ -139,7 +139,7 @@ mod tests {
         assert_eq!(x.len(), l0 as usize);
 
         // Try a few overlaps
-        let targets = [0.9, 0.7, 0.5, 0.3, 0.1, 0.05, 0.01];
+        let targets = [0.99, 0.96,0.93, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01];
          // tolerance on Jaccard estimate (tweak with k)
 
         for &rel in &targets {
