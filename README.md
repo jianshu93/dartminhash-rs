@@ -1,3 +1,8 @@
+[![Latest Version](https://img.shields.io/crates/v/dartminhash?style=for-the-badge&color=mediumpurple&logo=rust)](https://crates.io/crates/dartminhash)
+[![docs.rs](https://img.shields.io/docsrs/dartminhash?style=for-the-badge&logo=docs.rs&color=mediumseagreen)](https://docs.rs/dartminhash/latest/dartminhash/)
+
+
+
 <div align="center">
   <img width="50%" src ="DartMinHash_logo.png">
 </div>
@@ -6,9 +11,10 @@
 This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (2). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
 
 # Install & test
-Add to your Cargo.toml. Official release in crates.io will come soon.
+Add below lines to your Cargo.toml dependencies. Official release in crates.io is [here](https://crates.io/crates/dartminhash).
 ```bash
-dartminhash = { git = "https://github.com/jianshu93/dartminhash-rs.git" }
+dartminhash = "0.1.0"
+
 ```
 
 Test case to evaulate the accuracy of the algorithm
