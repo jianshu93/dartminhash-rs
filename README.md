@@ -107,4 +107,4 @@ Christiani, T., 2020. Dartminhash: Fast sketching for weighted sets. arXiv prepr
 
 Pǎtraşcu, M. and Thorup, M., 2012. The power of simple tabulation hashing. Journal of the ACM (JACM), 59(3), pp.1-50.
 
-Otmar Ertl. 2023. TreeMinHash: https://github.com/oertl/treeminhash
+Ertl, O. (2025) “TreeMinHash: Fast Sketching for Weighted Jaccard Similarity Estimation”. Zenodo. doi: 10.5281/zenodo.16730965.
