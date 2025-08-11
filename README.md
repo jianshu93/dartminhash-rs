@@ -8,7 +8,9 @@
 </div>
 
 # DartMinHash: Fast Sketching for Weighted Sets
-This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (2). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
+This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (4). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
+
+Note: DartMinHash is only significantly faster than (Efficient) Rejection Sampling (2,3) for very sparse vectors, that is the number of nonezero elements (d) is less than ~2% of vector dimension (D) on average for all vectors. This is especially true for large-scale datasets. 
 
 # Install & test
 Add below lines to your Cargo.toml dependencies. Official release in crates.io is [here](https://crates.io/crates/dartminhash).
@@ -103,8 +105,12 @@ fn main() {
 
 
 # References
-Christiani, T., 2020. Dartminhash: Fast sketching for weighted sets. arXiv preprint arXiv:2005.11547.
+1.Christiani, T., 2020. Dartminhash: Fast sketching for weighted sets. arXiv preprint arXiv:2005.11547.
 
-Pǎtraşcu, M. and Thorup, M., 2012. The power of simple tabulation hashing. Journal of the ACM (JACM), 59(3), pp.1-50.
+2.Shrivastava, A., 2016. Simple and efficient weighted minwise hashing. Advances in Neural Information Processing Systems, 29.
 
-Ertl, O. (2025) “TreeMinHash: Fast Sketching for Weighted Jaccard Similarity Estimation”. Zenodo. doi: 10.5281/zenodo.16730965.
+3.Li, X. and Li, P., 2021, May. Rejection sampling for weighted jaccard similarity revisited. In Proceedings of the AAAI Conference on Artificial Intelligence (Vol. 35, No. 5, pp. 4197-4205).
+
+4.Pǎtraşcu, M. and Thorup, M., 2012. The power of simple tabulation hashing. Journal of the ACM (JACM), 59(3), pp.1-50.
+
+5.Ertl, O. (2025) “TreeMinHash: Fast Sketching for Weighted Jaccard Similarity Estimation”. Zenodo. doi: 10.5281/zenodo.16730965.
