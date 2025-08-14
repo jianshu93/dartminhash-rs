@@ -67,7 +67,7 @@ estimated weighted Jaccard: 0.004638671875
 
 ```bash
 cargo test --release  rs_approximates_weighted_jaccard -- --nocapture
-cargo test ers_approximates_weighted_jaccard -- --nocapture
+cargo test --release ers_approximates_weighted_jaccard -- --nocapture
 ```
 
 output for RS and ERS:
