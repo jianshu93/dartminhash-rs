@@ -167,18 +167,18 @@ pub struct ErsWmh {
     index: RedGreenIndex,
     d: usize,
     // tabulation “generators”
-    t_u: Tab64Simple,      // for U(0,1) → r
-    t_key: Tab64Simple,    // key id from r_bits
+    t_u: Tab64Simple, // for U(0,1) → r
+    t_key: Tab64Simple, // key id from r_bits
     t_bucket: Tab64Simple, // bucket routing from key id
-    t_frac: Tab64Simple,   // fractional tie-breaker from r_bits
-    t_rot: Tab32Simple,    // rotation seed for densification
+    t_frac: Tab64Simple, // fractional tie-breaker from r_bits
+    t_rot: Tab32Simple, // rotation seed for densification
     k: u64,
 }
 
 #[derive(Clone, Copy)]
 struct BucketKey {
-    time: u64,   // global attempt index; lower is better
-    frac: u32,   // stable fractional tiebreaker
+    time: u64, // global attempt index; lower is better
+    frac: u32, // stable fractional tiebreaker
     hash_id: u64 // stable identity derived from r*
 }
 impl BucketKey { #[inline] fn rank(&self) -> (u64, u32) { (self.time, self.frac) } }
