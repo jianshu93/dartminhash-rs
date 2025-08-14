@@ -6,13 +6,13 @@
 //! - [`dart_minhash::DartMinHash`] : turns darts into a k-sized MinHash sketch
 //!
 //! Feature universe element = `(u64 id, f64 weight)`
-//! For unweighted UniFrac: `weight = branch_length` if edge present else 0.
 
 pub mod hash_utils;
 pub mod rng_utils;
 pub mod darthash;
 pub mod dartminhash;
 pub mod similarity;
+pub mod rejsmp;
 
 pub use crate::darthash::DartHash;
 pub use crate::dartminhash::DartMinHash;
@@ -28,3 +28,4 @@ pub use crate::similarity::{
     count_collisions,
     jaccard_estimate_from_minhashes
 };
+pub use crate::rejsmp::{RsWmh, ErsWmh};

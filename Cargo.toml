@@ -1,10 +1,10 @@
 [package]
 name = "dartminhash"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["jianshuzhao@yahoo.com"]
 repository = "https://github.com/jianshu93/dartminhash-rs.git"
-keywords = ["MinHash", "Weighted", "Jaccard", "Sketching"]
+keywords = ["MinHash", "Weighted", "Jaccard", "Sketching", "Rejection Sampling"]
 license = "MIT OR Apache-2.0"
 description = "Fast Sketching for Weighted Sets"
 
