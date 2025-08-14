@@ -10,16 +10,15 @@
 # DartMinHash & Rejection Sampling: Fast Sketching for Weighted Sets
 This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1), [Rejection Sampling](https://proceedings.neurips.cc/paper/2016/hash/c2626d850c80ea07e7511bbae4c76f4b-Abstract.html) (2), [Efficient Rejection Sampling](https://ojs.aaai.org/index.php/AAAI/article/view/16543) (3) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (4). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
 
-Note: DartMinHash is only significantly faster than (Efficient) Rejection Sampling (2,3) for very sparse vectors, that is the number of nonezero elements (d) is less than ~2% of vector dimension (D) on average for all vectors. This is especially true for large-scale datasets. However, RS and ERS have their own disadvantages (see below).
+Note: DartMinHash is only significantly faster than (Efficient) Rejection Sampling (2,3) for very sparse vectors, that is the number of nonezero elements (d) is less than ~2% of vector dimension (D) on average for all vectors. This is especially true for large-scale datasets. However, For RS and ERS, a maxmimum value of weight for input vector must be known. Otherwise, the estimation is significantly biased (6). Therefore, general applicability is limited by the required priori knowledge of sharp upper bounds for $w_{max}(d)$. Also, ERS is not unbiased (3).
 
 # Install & test
 Add below lines to your Cargo.toml dependencies. Official release in crates.io is [here](https://crates.io/crates/dartminhash).
 ```bash
 dartminhash = "0.1.0"
-
 ```
 
-Test case to evaulate the accuracy of the algorithm
+Test case to evaulate the accuracy of the DartMinHash algorithm.
 ```bash
 cargo test --release dartminhash_approximates_weighted_jaccard -- --nocapture
 ```
@@ -65,95 +64,91 @@ estimated weighted Jaccard: 0.004638671875
 
 ```
 
+Test case to evaulate the accuracy of RS and ERS algorithms.
 ```bash
-cargo test --release  rs_approximates_weighted_jaccard -- --nocapture
+cargo test --release  rs_approximates_weighted_jaccard_only  -- --nocapture
 cargo test --release ers_approximates_weighted_jaccard -- --nocapture
 ```
 
-output for RS and ERS:
+Test for true weighted Jaccard from 0.005 to 0.98. Output for RS:
 
 ```bash
-true weighted Jaccard: 0.9801980198019798
-true weighted Jaccard: 0.9801980198019787
-estimated weighted Jaccard: 0.98193359375
-true weighted Jaccard: 0.9230769230769285
-estimated weighted Jaccard: 0.9267578125
-true weighted Jaccard: 0.8691588785046633
-estimated weighted Jaccard: 0.865966796875
-true weighted Jaccard: 0.8181818181818125
-estimated weighted Jaccard: 0.822998046875
-true weighted Jaccard: 0.7391304347826192
-estimated weighted Jaccard: 0.982421875
-true weighted Jaccard: 0.923076923076924
-estimated weighted Jaccard: 0.739501953125
-true weighted Jaccard: 0.6666666666666703
-estimated weighted Jaccard: 0.665283203125
-true weighted Jaccard: 0.5999999999999898
-estimated weighted Jaccard: 0.606689453125
-true weighted Jaccard: 0.5384615384615365
-estimated weighted Jaccard: 0.532958984375
-true weighted Jaccard: 0.48148148148147674
-estimated weighted Jaccard: 0.92431640625
-true weighted Jaccard: 0.869158878504677
-estimated weighted Jaccard: 0.48095703125
-true weighted Jaccard: 0.4285714285714266
-estimated weighted Jaccard: 0.437255859375
-true weighted Jaccard: 0.3793103448275855
-estimated weighted Jaccard: 0.3740234375
-true weighted Jaccard: 0.3333333333333349
-estimated weighted Jaccard: 0.324951171875
-true weighted Jaccard: 0.24999999999999847
-estimated weighted Jaccard: 0.250732421875
-true weighted Jaccard: 0.17647058823529282
-estimated weighted Jaccard: 0.1845703125
-true weighted Jaccard: 0.11111111111111216
-estimated weighted Jaccard: 0.869384765625
-true weighted Jaccard: 0.8181818181818264
-estimated weighted Jaccard: 0.11279296875
-true weighted Jaccard: 0.05263157894736795
-estimated weighted Jaccard: 0.0537109375
-true weighted Jaccard: 0.025641025641025616
-estimated weighted Jaccard: 0.03076171875
-true weighted Jaccard: 0.005025125628140671
-estimated weighted Jaccard: 0.00537109375
-
-
-
-true weighted Jaccard: 0.9801980198019894
-estimated weighted Jaccard: 0.9794921875
-true weighted Jaccard: 0.9230769230769261
-estimated weighted Jaccard: 0.922119140625
-true weighted Jaccard: 0.86915887850468
-estimated weighted Jaccard: 0.869140625
-true weighted Jaccard: 0.8181818181818299
-estimated weighted Jaccard: 0.833251953125
-true weighted Jaccard: 0.7391304347826108
-estimated weighted Jaccard: 0.7490234375
-true weighted Jaccard: 0.6666666666666666
-estimated weighted Jaccard: 0.6787109375
-true weighted Jaccard: 0.5999999999999988
-estimated weighted Jaccard: 0.600341796875
-true weighted Jaccard: 0.5384615384615383
-estimated weighted Jaccard: 0.53662109375
-true weighted Jaccard: 0.48148148148149134
-estimated weighted Jaccard: 0.488037109375
-true weighted Jaccard: 0.4285714285714261
-estimated weighted Jaccard: 0.43212890625
-true weighted Jaccard: 0.3793103448275896
-estimated weighted Jaccard: 0.368896484375
-true weighted Jaccard: 0.33333333333333276
-estimated weighted Jaccard: 0.34228515625
-true weighted Jaccard: 0.24999999999999936
-estimated weighted Jaccard: 0.241455078125
-true weighted Jaccard: 0.1764705882352939
-estimated weighted Jaccard: 0.184814453125
-true weighted Jaccard: 0.1111111111111118
-estimated weighted Jaccard: 0.11865234375
-true weighted Jaccard: 0.05263157894736855
-estimated weighted Jaccard: 0.04931640625
-true weighted Jaccard: 0.025641025641025494
-estimated weighted Jaccard: 0.027099609375
+true weighted Jaccard: 0.9801980198019689
+estimated weighted Jaccard: 0.979736328125
+true weighted Jaccard: 0.9230769230769127
+estimated weighted Jaccard: 0.921875
+true weighted Jaccard: 0.8691588785046708
+estimated weighted Jaccard: 0.866455078125
+true weighted Jaccard: 0.8181818181817918
+estimated weighted Jaccard: 0.82373046875
+true weighted Jaccard: 0.7391304347825958
+estimated weighted Jaccard: 0.740966796875
+true weighted Jaccard: 0.6666666666666508
+estimated weighted Jaccard: 0.67041015625
+true weighted Jaccard: 0.5999999999999872
+estimated weighted Jaccard: 0.6005859375
+true weighted Jaccard: 0.5384615384615266
+estimated weighted Jaccard: 0.530029296875
+true weighted Jaccard: 0.48148148148147907
+estimated weighted Jaccard: 0.482421875
+true weighted Jaccard: 0.42857142857142794
+estimated weighted Jaccard: 0.435546875
+true weighted Jaccard: 0.37931034482758264
+estimated weighted Jaccard: 0.38818359375
+true weighted Jaccard: 0.3333333333333351
+estimated weighted Jaccard: 0.32373046875
+true weighted Jaccard: 0.24999999999999478
+estimated weighted Jaccard: 0.243896484375
+true weighted Jaccard: 0.17647058823529485
+estimated weighted Jaccard: 0.1796875
+true weighted Jaccard: 0.11111111111111124
+estimated weighted Jaccard: 0.112548828125
+true weighted Jaccard: 0.052631578947367655
+estimated weighted Jaccard: 0.04833984375
+true weighted Jaccard: 0.025641025641025373
+estimated weighted Jaccard: 0.025390625
 true weighted Jaccard: 0.005025125628140681
+estimated weighted Jaccard: 0.004638671875
+```
+
+
+Test for true weighted Jaccard from 0.005 to 0.98. Output for ERS:
+```bash
+true weighted Jaccard: 0.9801980198019838
+estimated weighted Jaccard: 0.97900390625
+true weighted Jaccard: 0.9230769230769154
+estimated weighted Jaccard: 0.92333984375
+true weighted Jaccard: 0.8691588785046709
+estimated weighted Jaccard: 0.874755859375
+true weighted Jaccard: 0.8181818181818246
+estimated weighted Jaccard: 0.8154296875
+true weighted Jaccard: 0.7391304347826162
+estimated weighted Jaccard: 0.734130859375
+true weighted Jaccard: 0.6666666666666549
+estimated weighted Jaccard: 0.6650390625
+true weighted Jaccard: 0.5999999999999958
+estimated weighted Jaccard: 0.61279296875
+true weighted Jaccard: 0.5384615384615411
+estimated weighted Jaccard: 0.531982421875
+true weighted Jaccard: 0.48148148148148484
+estimated weighted Jaccard: 0.4873046875
+true weighted Jaccard: 0.4285714285714297
+estimated weighted Jaccard: 0.4248046875
+true weighted Jaccard: 0.37931034482758624
+estimated weighted Jaccard: 0.372314453125
+true weighted Jaccard: 0.33333333333333315
+estimated weighted Jaccard: 0.32373046875
+true weighted Jaccard: 0.24999999999999611
+estimated weighted Jaccard: 0.25390625
+true weighted Jaccard: 0.17647058823529377
+estimated weighted Jaccard: 0.174560546875
+true weighted Jaccard: 0.11111111111111036
+estimated weighted Jaccard: 0.117431640625
+true weighted Jaccard: 0.05263157894736735
+estimated weighted Jaccard: 0.05224609375
+true weighted Jaccard: 0.025641025641025283
+estimated weighted Jaccard: 0.025634765625
+true weighted Jaccard: 0.005025125628140663
 estimated weighted Jaccard: 0.005126953125
 
 ```
@@ -195,11 +190,10 @@ fn main() {
 }
 
 ```
-For RS and ERS, a maxmimum value of weight for input vector must be known. Otherwise, the estimation is significantly biased (6). Therefore, general applicability is limited by the required priori knowledge of sharp upper bounds for $w_{max}(d)$. Also, ERS is not unbiased (3).
 
 Rejection Sampling:
 
-```bash
+```rust
 use dartminhash::{RsWmh};
 use dartminhash::rng_utils::mt_from_seed;
 
@@ -260,7 +254,7 @@ fn main() {
 
 Efficient Rejection Sampling:
 
-```bash
+```rust
 use dartminhash::ErsWmh;
 use dartminhash::rng_utils::mt_from_seed;
 
@@ -308,12 +302,6 @@ fn main() {
     let est_jaccard = hits as f64 / (k as f64);
 
     println!("ERS estimated weighted Jaccard: {:.4}", est_jaccard);
-
-    // (Optional) One-bit ERS sketch if you want ultra-compact:
-    // let bits_a = ers.onebit(&sample_a);
-    // let bits_b = ers.onebit(&sample_b);
-    // let hamming = bits_a.iter().zip(bits_b.iter()).filter(|(a,b)| a != b).count();
-    // println!("ERS 1-bit Hamming distance: {}", hamming);
 }
 
 ```

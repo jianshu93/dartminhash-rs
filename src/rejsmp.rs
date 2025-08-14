@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn rs_approximates_weighted_jaccard() {
+    fn rs_approximates_weighted_jaccard_only() {
         let mut rng = mt_from_seed(4242);
         let d = 200_000usize;
         let k = 4096;
