@@ -3,8 +3,10 @@
 //! Implements:
 //!   - RS (Shrivastava 2016): Algorithm 1/3 with constant-time ISGREEN via
 //!     integer-to-component and component-to-M maps.
-//!   - ERS (Li & Li 2021): single shared stream r_t, early stopping, and a safe
-//!     densification fallback using tabulation hashing.
+//!   - ERS (Li & Li 2021): K independent fixed-length sequences
+//!     r_{j,1..L} per hash position j; take the first green if any, otherwise mark
+//!     empty; then densify empties by uniformly picking from the non-empty positions.
+//!     All randomness is produced via tabulation hashing for consistency/speed.
 //!
 //! Inputs: sparse weighted vector `&[(u64, f64)]` where id ∈ [0, D) and weight ≥ 0.
 //! Randomness: purely via Tab32/Tab64 tabulation hashing (no stateful RNG required).
@@ -157,10 +159,11 @@ impl RsWmh {
     }
 }
 
-/// ERS MinHash (AAAI Algorithm 2): K independent fixed-length random sequences.
+/// ERS (AAAI Algorithm 2): K independent fixed-length random sequences.
 /// For each j in 0..K, scan r_{j,1},...,r_{j,L}; take first green. If none, mark E.
 /// Then densify: replace each E by a deterministic donor via rotation.
-/// ID is derived from the ACCEPTING COMPONENT INDEX i (and j), not from t.
+/// ID is derived from the ACCEPTED DRAW (j, t*) in the fixed sequence, not just the component.
+/// Using a per-draw identity ensures two sets collide iff they accept the same r_{j,t*}.
 pub struct ErsWmh {
     index: RedGreenIndex,
     d: usize,
