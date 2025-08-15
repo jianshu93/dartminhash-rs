@@ -255,53 +255,47 @@ fn main() {
 Efficient Rejection Sampling:
 
 ```rust
-use dartminhash::ErsWmh;
+use dartminhash::{ErsWmh};
 use dartminhash::rng_utils::mt_from_seed;
 
-/// Same cap helper as above
-fn caps_from_pair(d: usize, a: &[(u64, f64)], b: &[(u64, f64)]) -> Vec<u32> {
+fn caps_from_sets(d: usize, sets: &[&[(u64, f64)]]) -> Vec<u32> {
     let mut m = vec![1u32; d];
-    for &(i, w) in a.iter().chain(b.iter()) {
-        if w > 0.0 {
-            let cap = (w.ceil() as u32).max(1);
-            let idx = i as usize;
-            if cap > m[idx] { m[idx] = cap; }
+    for s in sets {
+        for &(id, w) in *s {
+            if w > 0.0 {
+                let idx = id as usize;
+                let cap = (w.ceil() as u32).max(1);
+                if cap > m[idx] { m[idx] = cap; }
+            }
         }
     }
     m
 }
 
 fn main() {
-    let d: usize = 1_000;
-    let k: u64 = 128;          // number of buckets
-    let mut rng = mt_from_seed(42);
+    let mut rng = mt_from_seed(1337);
 
-    let sample_a = vec![
-        (5, 1.2),
-        (17, 0.9),
-        (23, 1.1),
-        (42, 0.95),
-        (100, 1.0),
-    ];
-    let sample_b = vec![
-        (5, 1.0),
-        (17, 1.0),
-        (44, 1.1),
-        (100, 1.05),
-    ];
+    let d: usize = 200_000;
+    let k: u64   = 1024;
+    let L: u64   = 512;   // try 256–1024; larger L → fewer pre-densify empties
 
-    let m_per_dim = caps_from_pair(d, &sample_a, &sample_b);
+    // Two weighted vectors
+    let a = vec![(5, 1.2), (17, 0.9), (23, 1.1), (42, 0.95), (100, 1.0)];
+    let b = vec![(5, 1.0), (17, 1.0), (44, 1.1), (100, 1.05)];
 
-    // ERS: early-stopping k-bucket sketch, ids per bucket come from accepted r*
+    // Caps must dominate both vectors
+    let m_per_dim = caps_from_sets(d, &[&a, &b]);
+
     let ers = ErsWmh::new_mt(&mut rng, &m_per_dim, k);
-    let sk_a = ers.sketch_early_stop(&sample_a); // Vec<(id, rank)>
-    let sk_b = ers.sketch_early_stop(&sample_b);
 
-    // Estimate J via id-collision rate across buckets
-    let hits = sk_a.iter().zip(sk_b.iter()).filter(|(x, y)| x.0 == y.0).count();
-    let est_jaccard = hits as f64 / (k as f64);
+    // ERS returns k (id, rank) pairs; collisions on id estimate Jaccard
+    let sk_a = ers.sketch(&a, Some(L));
+    let sk_b = ers.sketch(&b, Some(L));
 
-    println!("ERS estimated weighted Jaccard: {:.4}", est_jaccard);
+    let hits = sk_a.iter().zip(&sk_b).filter(|(x, y)| x.0 == y.0).count();
+    let j_est = hits as f64 / k as f64;
+
+    println!("ERS (L={}) estimated weighted Jaccard: {:.4}", L, j_est);
 }
 
 ```
