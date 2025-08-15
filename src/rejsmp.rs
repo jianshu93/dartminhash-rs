@@ -193,20 +193,22 @@ impl ErsWmh {
         r <= (mi as f64) + xi
     }
 
-    /// Algorithm 2:
     /// - `max_attempts` is reinterpreted as **L** (sequence length per hash).
     ///   * None, L_DEFAULT
     ///   * Some(L), run exactly L draws per hash
+    /// For each j in 0..K, scan r_{j,1..L}; take the first green. If none, mark E.
+    /// Densification: replace each E by a uniformly chosen non-empty bucket (using
+    /// shared, data-independent randomness from tabulation).
+    /// `max_attempts` is interpreted as L (per-hash sequence length).
     pub fn sketch(&self, x: &[(u64, f64)], max_attempts: Option<u64>) -> Vec<Dart> {
         // Tunable default L (per-hash sequence length)
         const L_DEFAULT: u32 = 1024;
-
         let l_per_hash: u32 = max_attempts.map(|v| v as u32).unwrap_or(L_DEFAULT);
 
         let w = dense_weights(self.d, x);
         let k_usize = self.k as usize;
 
-        // Degenerate cases: no mass or M==0, deterministic fallback
+        // Degenerate cases: no mass or M==0 → deterministic fallback
         let m_total = self.index.m_total();
         let mass: f64 = w.iter().sum();
         if m_total == 0 || mass == 0.0 {
@@ -221,43 +223,39 @@ impl ErsWmh {
         let m = m_total as f64;
 
         // One slot per hash j
-        let mut buckets: Vec<Option<BucketKey>> = vec![None; k_usize];
-        let mut any_filled = false;
+        let mut buckets: Vec<Option<(u64 /*id*/, u32 /*time*/)>> = vec![None; k_usize];
 
         // For each hash position j, scan a fixed-length sequence {r_{j,t}}_{t=1..L}
         for j in 0..k_usize {
-            // deterministic stream: r_{j,t} = M * U(0,1) from tabulation on (j,t)
-            let mut chosen: Option<BucketKey> = None;
-
             for t in 1..=l_per_hash {
-                // Key for the (j,t) draw
+                // Per-draw key: (j, t) ⇒ r in [0,M)
                 let key = ((j as u64) << 32) ^ (t as u64);
                 let mut u = to_unit(self.t_u.hash(key));
-                if u >= 1.0 { u = f64::from_bits(0x3fefffffffffffff); } // clamp to < 1
+                if u >= 1.0 {
+                    u = f64::from_bits(0x3fefffffffffffff); // clamp to < 1
+                }
                 let r = m * u;
-
-                // Identify which component i this r falls into
-                let (i, _mi) = self.index.comp_of(r);
 
                 // Accept if green for this vector
                 if self.is_green(&w, r) {
-                    // IMPORTANT: ID must be based on the component index i (and j),
-                    // not on t; this is what preserves unbiased Jaccard.
-                    let id_key = ((j as u64) << 32) ^ (i as u64);
-                    let id = self.t_id.hash(id_key);
-                    chosen = Some(BucketKey { time: t, hash_id: id });
+                    // **Identity must be per-draw** so that two sets collide
+                    // iff they accepted the SAME r_{j,t}. Use (j,t).
+                    let id = self.t_id.hash(key);
+                    buckets[j] = Some((id, t));
                     break;
                 }
             }
-
-            if let Some(kv) = chosen {
-                buckets[j] = Some(kv);
-                any_filled = true;
-            }
         }
 
-        // If none filled (extremely unlikely with reasonable L), deterministic fallback
-        if !any_filled {
+        // Build donor list (indices of non-empty buckets)
+        let donors: Vec<usize> = buckets
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, v)| if v.is_some() { Some(idx) } else { None })
+            .collect();
+
+        // If none filled (unlikely with decent L), deterministic fallback
+        if donors.is_empty() {
             let mut out = Vec::with_capacity(k_usize);
             for j in 0..k_usize {
                 let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
@@ -266,30 +264,23 @@ impl ErsWmh {
             return out;
         }
 
-        // Densification by rotation: for each empty j, walk j + off, j + 2*off, ... (mod k)
-        // using a deterministic, data-independent offset derived from j.
+        // **Uniform** densification with shared randomness:
+        // For each empty j, pick donor = donors[ H(j) mod donors.len() ].
+        // This is uniform over donors and depends only on j and the tabulation
+        // seeds (shared across sets), not on the weights.
         for j in 0..k_usize {
             if buckets[j].is_none() {
-                let mut off = (self.t_rot.hash(j as u32) as usize) % k_usize;
-                if off == 0 { off = 1; }
-                let donor: BucketKey = {
-                    let mut t = 0usize;
-                    loop {
-                        let jj = (j + off * (t + 1)) % k_usize;
-                        if let Some(kv) = buckets[jj] { break kv; }
-                        t += 1;
-                        // Since at least one filled exists, this loop must terminate
-                    }
-                };
-                buckets[j] = Some(donor);
+                let idx = (self.t_rot.hash(j as u32) as usize) % donors.len();
+                let donor = donors[idx];
+                buckets[j] = buckets[donor]; // copy donor's (id, time)
             }
         }
 
         // Convert to (id, rank) = (hash_id, time as f64)
         let mut out = Vec::with_capacity(k_usize);
         for j in 0..k_usize {
-            let key = buckets[j].unwrap();
-            out.push((key.hash_id, key.time as f64));
+            let (id, t) = buckets[j].unwrap();
+            out.push((id, t as f64));
         }
         out
     }
