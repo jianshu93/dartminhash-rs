@@ -43,11 +43,6 @@ impl DartMinHash {
         }
         minhashes
     }
-
-    // 1-bit sketch: take LSB of hash id of each bucket winner
-    pub fn onebit(&self, x: &[(u64, f64)]) -> Vec<bool> {
-        self.sketch(x).into_iter().map(|(id, _)| (id & 1) == 1).collect()
-    }
 }
 
 #[cfg(test)]
@@ -162,6 +157,52 @@ mod tests {
             assert!(
                 err <= tol as f64,
                 "rel_overlap={rel}, true={j_true:.4}, est={j_est:.4}, err={err:.4} > tol={tol}"
+            );
+        }
+    }
+    #[test]
+    fn dartminhash_approximates_weighted_jaccard_sparse5() {
+        let mut rng = mt_from_seed(2025);
+
+        // "5% sparse": pick a much smaller l0 than the (implicit) universe size.
+        // (Your helpers don't take D; sparsity here is "few nonzeros" relative to a huge ID space.)
+        let l0 = 5_000;     // number of nonzeros (~5% of a conceptual D=1,000,000)
+        let l1 = 3_000.0;    // total weight (kept moderate)
+        let k  = 2048;       // sketch size (smaller than 4096 so this test is fast)
+
+        let dm = DartMinHash::new_mt(&mut rng, k);
+
+        // Base set
+        let x = generate_weighted_set(l0, l1, &mut rng);
+        assert_eq!(x.len(), l0 as usize);
+
+        // A range of true Jaccards, as in your other tests
+        let targets = [0.99, 0.96,0.93, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01];
+
+        for &rel in &targets {
+            let y = generate_similar_weighted_set(&x, rel, &mut rng);
+
+            // Ground truth
+            let j_true = jaccard_similarity(&x, &y);
+            println!("true weighted Jaccard (DMH sparse5): {:?}", j_true);
+
+            // Sketch & estimate
+            let sk_x = dm.sketch(&x);
+            let sk_y = dm.sketch(&y);
+            assert_eq!(sk_x.len(), k as usize);
+            assert_eq!(sk_y.len(), k as usize);
+
+            let j_est = jaccard_estimate_from_minhashes(&sk_x, &sk_y);
+            println!("estimated weighted Jaccard (DMH sparse5): {:?}", j_est);
+
+            // σ-aware tolerance (matches the RS/ERS tests you have)
+            let sd = (j_true * (1.0 - j_true) / (k as f64)).sqrt();
+            let tol = (3.2 * sd).max(1.25 / (k as f64).sqrt());
+
+            let err = (j_true - j_est).abs();
+            assert!(
+                err <= tol,
+                "DMH sparse5: true={j_true:.6}, est={j_est:.6}, err={err:.6}, tol={tol:.6}"
             );
         }
     }

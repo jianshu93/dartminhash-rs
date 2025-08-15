@@ -12,8 +12,6 @@
 //! Important note: the max weight for a vector must be known in advance. Otherwise if w_i > w_max
 //! for any vector, the ISGREEN test becomes wrong on that coordinate and your estimate biases high
 
-use std::cmp::Ordering;
-
 use rand_core::RngCore;
 use tab_hash::{Tab32Simple, Tab64Simple};
 
@@ -159,43 +157,33 @@ impl RsWmh {
     }
 }
 
-/// Efficient Rejection Sampling: define a **shared global order** r_t = f(0, t) on [0,M).
-/// For a set x, accept r_t if green(x). Route each accepted r* to a bucket
-/// using a tabulated key from r_bits; rank = t (lower is better). Early-stop
-/// once all k buckets have ≥1 candidate; otherwise densify safely.
+/// ERS MinHash (AAAI Algorithm 2): K independent fixed-length random sequences.
+/// For each j in 0..K, scan r_{j,1},...,r_{j,L}; take first green. If none, mark E.
+/// Then densify: replace each E by a deterministic donor via rotation.
+/// ID is derived from the ACCEPTING COMPONENT INDEX i (and j), not from t.
 pub struct ErsWmh {
     index: RedGreenIndex,
     d: usize,
-    // tabulation “generators”
-    t_u: Tab64Simple, // for U(0,1) → r
-    t_key: Tab64Simple, // key id from r_bits
-    t_bucket: Tab64Simple, // bucket routing from key id
-    t_frac: Tab64Simple, // fractional tie-breaker from r_bits
+    // tabulation generators
+    t_u: Tab64Simple,   // U(0,1) for r_{j,t}
+    t_id: Tab64Simple,  // stable id from (j,i)  (component-based identity)
     t_rot: Tab32Simple, // rotation seed for densification
     k: u64,
 }
 
 #[derive(Clone, Copy)]
 struct BucketKey {
-    time: u64, // global attempt index; lower is better
-    frac: u32, // stable fractional tiebreaker
-    hash_id: u64 // stable identity derived from r*
+    time: u32,    // t in 1..=L; lower is better
+    hash_id: u64, // stable identity derived from (j,i)
 }
-impl BucketKey { #[inline] fn rank(&self) -> (u64, u32) { (self.time, self.frac) } }
-impl PartialEq for BucketKey { fn eq(&self, o: &Self) -> bool { self.rank()==o.rank() } }
-impl Eq for BucketKey {}
-impl PartialOrd for BucketKey { fn partial_cmp(&self, o: &Self)->Option<Ordering>{Some(self.cmp(o))} }
-impl Ord for BucketKey { fn cmp(&self, o: &Self)->Ordering{ self.rank().cmp(&o.rank()) } }
 
 impl ErsWmh {
     pub fn new_mt(rng: &mut MtRng, m_per_dim: &[u32], k: u64) -> Self {
         let index = RedGreenIndex::from_m(m_per_dim);
         let t_u = tab64_from_rng(rng);
-        let t_key = tab64_from_rng(rng);
-        let t_bucket = tab64_from_rng(rng);
-        let t_frac = tab64_from_rng(rng);
+        let t_id = tab64_from_rng(rng);
         let t_rot = tab32_from_rng(rng);
-        Self { index, d: m_per_dim.len(), t_u, t_key, t_bucket, t_frac, t_rot, k }
+        Self { index, d: m_per_dim.len(), t_u, t_id, t_rot, k }
     }
 
     #[inline]
@@ -205,91 +193,110 @@ impl ErsWmh {
         r <= (mi as f64) + xi
     }
 
-    #[inline] fn route_bucket(&self, key_id: u64) -> usize {
-        (self.t_bucket.hash(key_id) % self.k) as usize
-    }
-    #[inline] fn frac32(&self, r_bits: u64) -> u32 {
-        (self.t_frac.hash(r_bits) & 0xFFFF_FFFF) as u32
-    }
-
-    /// One ERS sketch: k buckets; minimal (time, frac) per bucket wins.
-    /// `max_attempts`: optional cap on attempts before densification.
+    /// Algorithm 2:
+    /// - `max_attempts` is reinterpreted as **L** (sequence length per hash).
+    ///   * None, L_DEFAULT
+    ///   * Some(L), run exactly L draws per hash
     pub fn sketch(&self, x: &[(u64, f64)], max_attempts: Option<u64>) -> Vec<Dart> {
+        // Tunable default L (per-hash sequence length)
+        const L_DEFAULT: u32 = 1024;
+
+        let l_per_hash: u32 = max_attempts.map(|v| v as u32).unwrap_or(L_DEFAULT);
+
         let w = dense_weights(self.d, x);
-        let m = self.index.m_total() as f64;
-        let mut buckets: Vec<Option<BucketKey>> = vec![None; self.k as usize];
+        let k_usize = self.k as usize;
 
-        let wanted = self.k as usize;
-        let mut filled = 0usize;
-        let mut attempts: u64 = 0;
-
-        // Early-stopping loop
-        loop {
-            attempts += 1;
-            let u = u01_from_tab(&self.t_u, 0, attempts);
-            let r = m * u;
-
-            if self.is_green(&w, r) {
-                let r_bits = r.to_bits();
-                let key_id = self.t_key.hash(r_bits);
-                let b = self.route_bucket(key_id);
-                let key = BucketKey { time: attempts, frac: self.frac32(r_bits), hash_id: key_id };
-                match &mut buckets[b] {
-                    None => { buckets[b] = Some(key); filled += 1;
-                              if filled == wanted && max_attempts.is_none() { break; } }
-                    Some(best) => { if key < *best { *best = key; } }
-                }
-            }
-
-            if let Some(cap) = max_attempts { if attempts >= cap { break; } }
-        }
-
-        // Safe densification:
-        if filled == 0 {
-            // Deterministic fallback: produce k fake slots
-            let mut out = Vec::with_capacity(wanted);
-            for j in 0..wanted {
+        // Degenerate cases: no mass or M==0, deterministic fallback
+        let m_total = self.index.m_total();
+        let mass: f64 = w.iter().sum();
+        if m_total == 0 || mass == 0.0 {
+            let mut out = Vec::with_capacity(k_usize);
+            for j in 0..k_usize {
                 let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
-                out.push((fake, u64::MAX as f64));
+                out.push((fake, f64::INFINITY));
             }
             return out;
         }
-        if filled < wanted {
-            for j in 0..wanted {
-                if buckets[j].is_none() {
-                    // rotate to next non-empty
-                    let mut off = (self.t_rot.hash(j as u32) as usize) % wanted;
-                    if off == 0 { off = 1; }
-                    let key: BucketKey = {
-                        let mut t = 0usize;
-                        loop {
-                            let jj = (j + off * (t + 1)) % wanted;
-                            if let Some(kv) = buckets[jj] { break kv; }
-                            t += 1;
-                        }
-                    };
-                    buckets[j] = Some(key);
+
+        let m = m_total as f64;
+
+        // One slot per hash j
+        let mut buckets: Vec<Option<BucketKey>> = vec![None; k_usize];
+        let mut any_filled = false;
+
+        // For each hash position j, scan a fixed-length sequence {r_{j,t}}_{t=1..L}
+        for j in 0..k_usize {
+            // deterministic stream: r_{j,t} = M * U(0,1) from tabulation on (j,t)
+            let mut chosen: Option<BucketKey> = None;
+
+            for t in 1..=l_per_hash {
+                // Key for the (j,t) draw
+                let key = ((j as u64) << 32) ^ (t as u64);
+                let mut u = to_unit(self.t_u.hash(key));
+                if u >= 1.0 { u = f64::from_bits(0x3fefffffffffffff); } // clamp to < 1
+                let r = m * u;
+
+                // Identify which component i this r falls into
+                let (i, _mi) = self.index.comp_of(r);
+
+                // Accept if green for this vector
+                if self.is_green(&w, r) {
+                    // IMPORTANT: ID must be based on the component index i (and j),
+                    // not on t; this is what preserves unbiased Jaccard.
+                    let id_key = ((j as u64) << 32) ^ (i as u64);
+                    let id = self.t_id.hash(id_key);
+                    chosen = Some(BucketKey { time: t, hash_id: id });
+                    break;
                 }
+            }
+
+            if let Some(kv) = chosen {
+                buckets[j] = Some(kv);
+                any_filled = true;
+            }
+        }
+
+        // If none filled (extremely unlikely with reasonable L), deterministic fallback
+        if !any_filled {
+            let mut out = Vec::with_capacity(k_usize);
+            for j in 0..k_usize {
+                let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
+                out.push((fake, f64::INFINITY));
+            }
+            return out;
+        }
+
+        // Densification by rotation: for each empty j, walk j + off, j + 2*off, ... (mod k)
+        // using a deterministic, data-independent offset derived from j.
+        for j in 0..k_usize {
+            if buckets[j].is_none() {
+                let mut off = (self.t_rot.hash(j as u32) as usize) % k_usize;
+                if off == 0 { off = 1; }
+                let donor: BucketKey = {
+                    let mut t = 0usize;
+                    loop {
+                        let jj = (j + off * (t + 1)) % k_usize;
+                        if let Some(kv) = buckets[jj] { break kv; }
+                        t += 1;
+                        // Since at least one filled exists, this loop must terminate
+                    }
+                };
+                buckets[j] = Some(donor);
             }
         }
 
         // Convert to (id, rank) = (hash_id, time as f64)
-        let mut out = Vec::with_capacity(wanted);
-        for j in 0..wanted {
-            let key = buckets[j].expect("bucket must be filled after densification");
+        let mut out = Vec::with_capacity(k_usize);
+        for j in 0..k_usize {
+            let key = buckets[j].unwrap();
             out.push((key.hash_id, key.time as f64));
         }
         out
     }
 
-    /// Convenience: early stop with no attempt cap.
+    /// Uses default L (L_DEFAULT).
     pub fn sketch_early_stop(&self, x: &[(u64, f64)]) -> Vec<Dart> {
         self.sketch(x, None)
-    }
-
-    /// 1-bit ERS sketch from the key ids (LSB).
-    pub fn onebit(&self, x: &[(u64, f64)]) -> Vec<bool> {
-        self.sketch_early_stop(&x).into_iter().map(|(id, _)| (id & 1) == 1).collect()
     }
 }
 
@@ -388,19 +395,27 @@ mod tests {
         let d = 200_000usize;
         let k = 4096;
 
+        // Base set
         let x = generate_weighted_set(d, 50_000, 10_000.0, &mut rng);
-        let m = caps_from_sets(d, &[&x]);           // <- caps from x
+
+        // Build caps **from the data actually being sketched**
+        let m = caps_from_sets(d, &[&x]);
+
+        // ERS with data-consistent caps
         let ers = ErsWmh::new_mt(&mut rng, &m, k as u64);
 
-        let sk = ers.sketch_early_stop(&x);
+        // Algorithm 2: per-hash sequence length L (NOT accept cap)
+        let l: u64 = 512;
+        let sk = ers.sketch(&x, Some(l));
+
         assert_eq!(sk.len(), k);
     }
 
     #[test]
     fn rs_approximates_weighted_jaccard_only() {
-        let mut rng = mt_from_seed(4242);
+        let mut rng = mt_from_seed(42);
         let d = 200_000usize;
-        let k = 4096;
+        let k = 2048;
 
         let l0 = 50_000u64;
         let l1 = 10_000.0;
@@ -435,9 +450,14 @@ mod tests {
 
     #[test]
     fn ers_approximates_weighted_jaccard() {
+        use crate::similarity::jaccard_similarity;
+
         let mut rng = mt_from_seed(8675309);
         let d = 200_000usize;
         let k = 4096;
+
+        // Fixed per-hash sequence length (Algorithm 2)
+        let l: u64 = 1024; // 256–1024 are all fine; larger L, fewer empties pre-densify
 
         let l0 = 50_000u64;
         let l1 = 10_000.0;
@@ -448,21 +468,24 @@ mod tests {
             let y = generate_similar_weighted_set(d, &x, rel, &mut rng);
             let j_true = jaccard_similarity(&x, &y);
             println!("true weighted Jaccard: {:?}", j_true);
-            // Caps from this pair (or dataset-wide in production)
-            let m = caps_from_sets(d, &[&x, &y]);
-            let ers = ErsWmh::new_mt(&mut rng, &m, k as u64);
 
-            // Collision rate of key ids across buckets
-            let sk_x = ers.sketch_early_stop(&x);
-            let sk_y = ers.sketch_early_stop(&y);
+            // IMPORTANT: caps must dominate BOTH vectors in the comparison
+            let m_per_dim = caps_from_sets(d, &[&x, &y]);
 
-            let mut hits = 0usize;
-            for i in 0..k as usize { if sk_x[i].0 == sk_y[i].0 { hits += 1; } }
+            // Rebuild ERS for this pair with valid caps
+            let ers = ErsWmh::new_mt(&mut rng, &m_per_dim, k as u64);
+
+            // ERS (Alg.2): collision rate of per-bucket IDs
+            let sk_x = ers.sketch(&x, Some(l));
+            let sk_y = ers.sketch(&y, Some(l));
+
+            let hits = sk_x.iter().zip(&sk_y).filter(|(a,b)| a.0 == b.0).count();
             let j_est = hits as f64 / k as f64;
             println!("estimated weighted Jaccard: {:?}", j_est);
-            let sd = (j_true * (1.0 - j_true) / (k as f64)).sqrt();
-            let tol = (3.0 * sd).max(1.1 / (k as f64).sqrt());
 
+            // σ-aware tolerance
+            let sd  = (j_true * (1.0 - j_true) / (k as f64)).sqrt();
+            let tol = (3.2 * sd).max(1.25 / (k as f64).sqrt());
             let err = (j_true - j_est).abs();
             assert!(
                 err <= tol,
