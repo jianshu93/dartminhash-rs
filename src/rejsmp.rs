@@ -11,7 +11,7 @@
 //! Inputs: sparse weighted vector `&[(u64, f64)]` where id ∈ [0, D) and weight ≥ 0.
 //! Randomness: purely via Tab32/Tab64 tabulation hashing (no stateful RNG required).
 //! 
-//! Important note: the max weight for a vector must be known in advance. Otherwise if w_i > w_max
+//! Important note: the max weight for a vector must be known in advance (dimension-wise). Otherwise if w_i > w_max
 //! for any vector, the ISGREEN test becomes wrong on that coordinate and your estimate biases high
 
 use rand_core::RngCore;
