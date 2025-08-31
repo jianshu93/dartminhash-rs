@@ -277,7 +277,8 @@ fn main() {
 
     let d: usize = 200_000;
     let k: u64   = 1024;
-    let L: u64   = 512;   // try 256–1024; larger L → fewer pre-densify empties
+    // see below for how to choose L
+    let L: u64   = 512;  
 
     // Two weighted vectors
     let a = vec![(5, 1.2), (17, 0.9), (23, 1.1), (42, 0.95), (100, 1.0)];
