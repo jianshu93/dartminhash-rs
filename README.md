@@ -10,7 +10,7 @@
 # DartMinHash & Rejection Sampling: Fast Sketching for Weighted Sets
 This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1), [Rejection Sampling](https://proceedings.neurips.cc/paper/2016/hash/c2626d850c80ea07e7511bbae4c76f4b-Abstract.html) (2) and [Efficient Rejection Sampling](https://ojs.aaai.org/index.php/AAAI/article/view/16543) (3) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (4). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
 
-Note: DartMinHash is only significantly faster than (Efficient) Rejection Sampling (2,3) for very sparse vectors, that is the number of nonezero elements (d) is less than ~2% of vector dimension (D) on average for all vectors. This is especially true for large-scale datasets. However, For RS and ERS, a maxmimum value of weight for input vector must be known (dimension-wise). Otherwise, the estimation is significantly biased (6). Therefore, general applicability is limited by the required priori knowledge of sharp upper bounds for $w_{max}(d)$. Also, ERS is not unbiased (3).
+Note: DartMinHash is significantly faster than (Efficient) Rejection Sampling (2,3) for very sparse vectors, that is the number of nonezero elements (d) is less than ~5% of vector dimension (D) on average for all vectors. This is especially true for large-scale datasets. However, For RS and ERS, a maxmimum value of weight for input vector must be known (dimension-wise). Otherwise, the estimation is significantly biased (6). Therefore, general applicability is limited by the required priori knowledge of sharp upper bounds for $w_{max}(d)$. Also, ERS is not unbiased (3). 
 
 # Install & test
 Add below lines to your Cargo.toml dependencies. Official release in crates.io is [here](https://crates.io/crates/dartminhash).
@@ -299,6 +299,9 @@ fn main() {
 }
 
 ```
+
+## Choosing L for Efficent Rejection Sampling (ERS)
+The best L for achiving a given accuracy is related to the sparsity of the data (see ERS paper [here](https://ojs.aaai.org/index.php/AAAI/article/view/16543)). The author recommended an equation for L: $l=\frac{\alpha}{s}$, where s is the sparsity of the data (d/D, see above) while $\alpha$ is a constant, normally 0.5 to 5. In real-world datasets, $\alpha$ = 5 is better. 
 
 
 
