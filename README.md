@@ -66,51 +66,8 @@ estimated weighted Jaccard: 0.004638671875
 
 Test case to evaulate the accuracy of RS and ERS algorithms.
 ```bash
-cargo test --release  rs_approximates_weighted_jaccard_only  -- --nocapture
 cargo test --release ers_approximates_weighted_jaccard -- --nocapture
 ```
-
-Test for true weighted Jaccard from 0.005 to 0.98. Output for RS:
-
-```bash
-true weighted Jaccard: 0.9801980198019689
-estimated weighted Jaccard: 0.979736328125
-true weighted Jaccard: 0.9230769230769127
-estimated weighted Jaccard: 0.921875
-true weighted Jaccard: 0.8691588785046708
-estimated weighted Jaccard: 0.866455078125
-true weighted Jaccard: 0.8181818181817918
-estimated weighted Jaccard: 0.82373046875
-true weighted Jaccard: 0.7391304347825958
-estimated weighted Jaccard: 0.740966796875
-true weighted Jaccard: 0.6666666666666508
-estimated weighted Jaccard: 0.67041015625
-true weighted Jaccard: 0.5999999999999872
-estimated weighted Jaccard: 0.6005859375
-true weighted Jaccard: 0.5384615384615266
-estimated weighted Jaccard: 0.530029296875
-true weighted Jaccard: 0.48148148148147907
-estimated weighted Jaccard: 0.482421875
-true weighted Jaccard: 0.42857142857142794
-estimated weighted Jaccard: 0.435546875
-true weighted Jaccard: 0.37931034482758264
-estimated weighted Jaccard: 0.38818359375
-true weighted Jaccard: 0.3333333333333351
-estimated weighted Jaccard: 0.32373046875
-true weighted Jaccard: 0.24999999999999478
-estimated weighted Jaccard: 0.243896484375
-true weighted Jaccard: 0.17647058823529485
-estimated weighted Jaccard: 0.1796875
-true weighted Jaccard: 0.11111111111111124
-estimated weighted Jaccard: 0.112548828125
-true weighted Jaccard: 0.052631578947367655
-estimated weighted Jaccard: 0.04833984375
-true weighted Jaccard: 0.025641025641025373
-estimated weighted Jaccard: 0.025390625
-true weighted Jaccard: 0.005025125628140681
-estimated weighted Jaccard: 0.004638671875
-```
-
 
 Test for true weighted Jaccard from 0.005 to 0.98. Output for ERS:
 ```bash
