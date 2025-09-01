@@ -8,14 +8,14 @@
 </div>
 
 # DartMinHash & Rejection Sampling: Fast Sketching for Weighted Sets
-This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1), [Rejection Sampling](https://proceedings.neurips.cc/paper/2016/hash/c2626d850c80ea07e7511bbae4c76f4b-Abstract.html) (2) and [Efficient Rejection Sampling](https://ojs.aaai.org/index.php/AAAI/article/view/16543) (3) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (4). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
+This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1) and [Efficient Rejection Sampling](https://ojs.aaai.org/index.php/AAAI/article/view/16543) (3) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (4). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
 
 Note: DartMinHash is significantly faster than (Efficient) Rejection Sampling (2,3) for very sparse vectors, that is the number of nonezero elements (d) is less than ~5% of vector dimension (D) on average for all vectors. This is especially true for large-scale datasets. However, For RS and ERS, a maxmimum value of weight for input vector must be known (dimension-wise). Otherwise, the estimation is significantly biased (6). Therefore, general applicability is limited by the required priori knowledge of sharp upper bounds for $w_{max}(d)$. Also, ERS is not unbiased (3). 
 
 # Install & test
 Add below lines to your Cargo.toml dependencies. Official release in crates.io is [here](https://crates.io/crates/dartminhash).
 ```bash
-dartminhash = "0.1.0"
+dartminhash = "0.1"
 ```
 
 Test case to evaulate the accuracy of the DartMinHash algorithm.
@@ -190,82 +190,20 @@ fn main() {
 }
 
 ```
-
-Rejection Sampling:
-
-```rust
-use dartminhash::{RsWmh};
-use dartminhash::rng_utils::mt_from_seed;
-
-/// Build caps that dominate the given vectors: m_i = max(1, ceil(max(x_i,y_i))).
-fn caps_from_pair(d: usize, a: &[(u64, f64)], b: &[(u64, f64)]) -> Vec<u32> {
-    let mut m = vec![1u32; d];
-    for &(i, w) in a.iter().chain(b.iter()) {
-        if w > 0.0 {
-            let cap = (w.ceil() as u32).max(1);
-            let idx = i as usize;
-            if cap > m[idx] { m[idx] = cap; }
-        }
-    }
-    m
-}
-
-fn main() {
-    // Suppose your ids are < D
-    let d: usize = 1_000;       // feature universe size (just an example)
-    let k: usize = 128;         // number of hashes
-    let mut rng = mt_from_seed(42);
-
-    // Weighted inputs
-    let sample_a = vec![
-        (5, 1.2),
-        (17, 0.9),
-        (23, 1.1),
-        (42, 0.95),
-        (100, 1.0),
-    ];
-    let sample_b = vec![
-        (5, 1.0),
-        (17, 1.0),
-        (44, 1.1),
-        (100, 1.05),
-    ];
-
-    // Build per-dimension caps (for production, precompute once across your dataset)
-    let m_per_dim = caps_from_pair(d, &sample_a, &sample_b);
-
-    // RS: k independent hashes → k 64-bit ids (collisions estimate J)
-    let rs = RsWmh::new_mt(&mut rng, &m_per_dim, k);
-    let sig_a = rs.sketch_ids(&sample_a);
-    let sig_b = rs.sketch_ids(&sample_b);
-
-    // Collision-rate estimator
-    let hits = sig_a.iter().zip(sig_b.iter()).filter(|(x, y)| x == y).count();
-    let est_jaccard = hits as f64 / (k as f64);
-
-    println!("RS estimated weighted Jaccard: {:.4}", est_jaccard);
-
-    // (Optional) You can also inspect geometric trial counts:
-    // let counts_a = rs.sketch_counts(&sample_a);
-    // println!("example RS counts head: {:?}", &counts_a[..8]);
-}
-
-```
-
 Efficient Rejection Sampling:
 
 ```rust
 use dartminhash::{ErsWmh};
 use dartminhash::rng_utils::mt_from_seed;
 
-fn caps_from_sets(d: usize, sets: &[&[(u64, f64)]]) -> Vec<u32> {
-    let mut m = vec![1u32; d];
+// Tight, real-valued caps: m_i = max_s w_i(s) (no ceil, no max(1))
+fn caps_from_sets(d: usize, sets: &[&[(u64, f64)]]) -> Vec<f64> {
+    let mut m = vec![0.0f64; d];
     for s in sets {
         for &(id, w) in *s {
             if w > 0.0 {
                 let idx = id as usize;
-                let cap = (w.ceil() as u32).max(1);
-                if cap > m[idx] { m[idx] = cap; }
+                if w > m[idx] { m[idx] = w; }
             }
         }
     }
@@ -277,16 +215,16 @@ fn main() {
 
     let d: usize = 200_000;
     let k: u64   = 1024;
-    // see below for how to choose L
-    let L: u64   = 512;  
+    let L: u64   = 512;  // with tight caps you can usually keep this modest
 
     // Two weighted vectors
     let a = vec![(5, 1.2), (17, 0.9), (23, 1.1), (42, 0.95), (100, 1.0)];
     let b = vec![(5, 1.0), (17, 1.0), (44, 1.1), (100, 1.05)];
 
-    // Caps must dominate both vectors
-    let m_per_dim = caps_from_sets(d, &[&a, &b]);
+    // Caps must dominate both vectors; length d should cover the largest id+1
+    let m_per_dim: Vec<f64> = caps_from_sets(d, &[&a, &b]);
 
+    // New constructor takes &[f64] caps
     let ers = ErsWmh::new_mt(&mut rng, &m_per_dim, k);
 
     // ERS returns k (id, rank) pairs; collisions on id estimate Jaccard

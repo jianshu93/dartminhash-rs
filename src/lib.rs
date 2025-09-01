@@ -28,4 +28,4 @@ pub use crate::similarity::{
     count_collisions,
     jaccard_estimate_from_minhashes
 };
-pub use crate::rejsmp::{RsWmh, ErsWmh};
+pub use crate::rejsmp::ErsWmh;
