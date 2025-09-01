@@ -161,29 +161,22 @@ impl RsWmh {
 
 /// ERS (AAAI Algorithm 2): K independent fixed-length random sequences.
 /// For each j in 0..K, scan r_{j,1},...,r_{j,L}; take first green. If none, mark E.
-/// Then densify: replace each E by a deterministic donor via rotation.
-/// ID is derived from the ACCEPTED DRAW (j, t*) in the fixed sequence, not just the component.
-/// Using a per-draw identity ensures two sets collide iff they accept the same r_{j,t*}.
+/// Then densify empties by rotating to the next non-empty bucket with a
+/// per-j random offset (data-independent).
 pub struct ErsWmh {
     index: RedGreenIndex,
     d: usize,
     // tabulation generators
-    t_u: Tab64Simple,   // U(0,1) for r_{j,t}
-    t_id: Tab64Simple,  // stable id from (j,i)  (component-based identity)
-    t_rot: Tab32Simple, // rotation seed for densification
+    t_u:  Tab64Simple,  // U(0,1) for r_{j,t}
+    t_id: Tab64Simple,  // ID from accepted draw r (via r.to_bits())
+    t_rot: Tab32Simple, // offset for densification
     k: u64,
-}
-
-#[derive(Clone, Copy)]
-struct BucketKey {
-    time: u32,    // t in 1..=L; lower is better
-    hash_id: u64, // stable identity derived from (j,i)
 }
 
 impl ErsWmh {
     pub fn new_mt(rng: &mut MtRng, m_per_dim: &[u32], k: u64) -> Self {
         let index = RedGreenIndex::from_m(m_per_dim);
-        let t_u = tab64_from_rng(rng);
+        let t_u  = tab64_from_rng(rng);
         let t_id = tab64_from_rng(rng);
         let t_rot = tab32_from_rng(rng);
         Self { index, d: m_per_dim.len(), t_u, t_id, t_rot, k }
@@ -196,22 +189,16 @@ impl ErsWmh {
         r <= (mi as f64) + xi
     }
 
-    /// - `max_attempts` is reinterpreted as **L** (sequence length per hash).
-    ///   * None, L_DEFAULT
-    ///   * Some(L), run exactly L draws per hash
-    /// For each j in 0..K, scan r_{j,1..L}; take the first green. If none, mark E.
-    /// Densification: replace each E by a uniformly chosen non-empty bucket (using
-    /// shared, data-independent randomness from tabulation).
-    /// `max_attempts` is interpreted as L (per-hash sequence length).
+    /// `max_attempts` is interpreted as L (sequence length per hash position).
+    /// If None, uses a moderate default (1024).
     pub fn sketch(&self, x: &[(u64, f64)], max_attempts: Option<u64>) -> Vec<Dart> {
-        // Tunable default L (per-hash sequence length)
         const L_DEFAULT: u32 = 1024;
         let l_per_hash: u32 = max_attempts.map(|v| v as u32).unwrap_or(L_DEFAULT);
 
         let w = dense_weights(self.d, x);
         let k_usize = self.k as usize;
 
-        // Degenerate cases: no mass or M==0 → deterministic fallback
+        // Degenerate: no mass or M==0 → deterministic, shared fallback
         let m_total = self.index.m_total();
         let mass: f64 = w.iter().sum();
         if m_total == 0 || mass == 0.0 {
@@ -225,40 +212,32 @@ impl ErsWmh {
 
         let m = m_total as f64;
 
-        // One slot per hash j
+        // One slot per hash position j
         let mut buckets: Vec<Option<(u64 /*id*/, u32 /*time*/)>> = vec![None; k_usize];
 
-        // For each hash position j, scan a fixed-length sequence {r_{j,t}}_{t=1..L}
+        // Fixed-length sequences r_{j,t}; accept first green per j
         for j in 0..k_usize {
             for t in 1..=l_per_hash {
-                // Per-draw key: (j, t) ⇒ r in [0,M)
+                // key = (j, t)  → u ∈ [0,1) → r ∈ [0,M)
                 let key = ((j as u64) << 32) ^ (t as u64);
                 let mut u = to_unit(self.t_u.hash(key));
                 if u >= 1.0 {
-                    u = f64::from_bits(0x3fefffffffffffff); // clamp to < 1
+                    // guard against a theoretical 1.0 due to FP edge
+                    u = f64::from_bits(0x3fefffffffffffff);
                 }
                 let r = m * u;
 
-                // Accept if green for this vector
                 if self.is_green(&w, r) {
-                    // **Identity must be per-draw** so that two sets collide
-                    // iff they accepted the SAME r_{j,t}. Use (j,t).
-                    let id = self.t_id.hash(key);
+                    // ID derived from the accepted *draw* r (ties collisions to the same r)
+                    let id = self.t_id.hash(r.to_bits());
                     buckets[j] = Some((id, t));
                     break;
                 }
             }
         }
 
-        // Build donor list (indices of non-empty buckets)
-        let donors: Vec<usize> = buckets
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, v)| if v.is_some() { Some(idx) } else { None })
-            .collect();
-
-        // If none filled (unlikely with decent L), deterministic fallback
-        if donors.is_empty() {
+        // If *all* buckets empty (should be extremely rare with decent L), fallback
+        if buckets.iter().all(|b| b.is_none()) {
             let mut out = Vec::with_capacity(k_usize);
             for j in 0..k_usize {
                 let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
@@ -267,15 +246,29 @@ impl ErsWmh {
             return out;
         }
 
-        // **Uniform** densification with shared randomness:
-        // For each empty j, pick donor = donors[ H(j) mod donors.len() ].
-        // This is uniform over donors and depends only on j and the tabulation
-        // seeds (shared across sets), not on the weights.
+        // Rotation densification: for each empty j, start from a per-j offset and
+        // scan sequentially (mod k) until a non-empty bucket is found; copy it.
         for j in 0..k_usize {
             if buckets[j].is_none() {
-                let idx = (self.t_rot.hash(j as u32) as usize) % donors.len();
-                let donor = donors[idx];
-                buckets[j] = buckets[donor]; // copy donor's (id, time)
+                // offset in {1,..,k-1}
+                let offset = (self.t_rot.hash(j as u32) as usize % (k_usize.saturating_sub(1)).max(1)) + 1;
+                let mut idx = (j + offset) % k_usize;
+
+                // probe up to k-1 positions
+                for _ in 0..(k_usize - 1) {
+                    if let Some(val) = buckets[idx] {
+                        buckets[j] = Some(val);
+                        break;
+                    }
+                    idx += 1;
+                    if idx == k_usize { idx = 0; }
+                }
+
+                // ultra-rare guard
+                if buckets[j].is_none() {
+                    let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
+                    buckets[j] = Some((fake, u32::MAX));
+                }
             }
         }
 
@@ -289,6 +282,7 @@ impl ErsWmh {
     }
 
     /// Uses default L (L_DEFAULT).
+    #[inline]
     pub fn sketch_early_stop(&self, x: &[(u64, f64)]) -> Vec<Dart> {
         self.sketch(x, None)
     }
