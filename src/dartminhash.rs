@@ -161,14 +161,14 @@ mod tests {
         }
     }
     #[test]
-    fn dartminhash_approximates_weighted_jaccard_sparse5() {
+    fn dartminhash2_approximates_weighted_jaccard_sparse() {
         let mut rng = mt_from_seed(2025);
 
         // "5% sparse": pick a much smaller l0 than the (implicit) universe size.
         // (Your helpers don't take D; sparsity here is "few nonzeros" relative to a huge ID space.)
         let l0 = 5_000;     // number of nonzeros (~5% of a conceptual D=1,000,000)
         let l1 = 3_000.0;    // total weight (kept moderate)
-        let k  = 2048;       // sketch size (smaller than 4096 so this test is fast)
+        let k  = 4096;       // sketch size (smaller than 4096 so this test is fast)
 
         let dm = DartMinHash::new_mt(&mut rng, k);
 
