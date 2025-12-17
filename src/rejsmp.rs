@@ -1,7 +1,7 @@
 //! Weighted MinHash via Efficient Rejection Sampling (ERS).
 //!
 //! Implements:
-//!   - ERS (Li & Li 2021): K independent fixed-length sequences
+//!   - ERS (Li & Li 2021): k independent fixed-length sequences
 //!     r_{j,1..L} per hash position j; take the first green if any, otherwise mark
 //!     empty; then densify empties by rotating to a non-empty bucket with a
 //!     per-j random offset (data-independent).
@@ -16,8 +16,11 @@
 
 use tab_hash::{Tab32Simple, Tab64Simple};
 use rand_core::RngCore;
+
 use crate::hash_utils::{tab32_from_rng, tab64_from_rng, to_unit};
 use crate::rng_utils::MtRng;
+
+use std::cell::RefCell;
 
 /// A single (id, rank) pair compatible with your DartMinHash plumbing.
 pub type Dart = (u64, f64);
@@ -44,34 +47,24 @@ impl RedGreenIndex {
             acc += mi;
             cum.push(acc);
         }
-        Self {
-            cum,
-            d,
-            m_total: acc,
-        }
+        Self { cum, d, m_total: acc }
     }
 
     #[inline]
-    pub fn d(&self) -> usize {
-        self.d
-    }
+    pub fn d(&self) -> usize { self.d }
 
     #[inline]
-    pub fn m_total(&self) -> f64 {
-        self.m_total
-    }
+    pub fn m_total(&self) -> f64 { self.m_total }
 
     /// Map r∈[0,M) to its component i and the left boundary cum[i].
     /// If r==M due to FP, clamp to nextafter(M, -∞).
     #[inline]
     pub fn comp_of(&self, mut r: f64) -> (usize, f64) {
-        // Clamp r to [0, nextafter(M, -inf))
         if r >= self.m_total {
             // nextafter(M, -inf)
             r = f64::from_bits(self.m_total.to_bits() - 1);
         }
         // upper_bound: smallest j with cum[j] > r
-        // then i = j - 1 so that cum[i] <= r < cum[i+1]
         let mut lo = 1usize;
         let mut hi = self.cum.len();
         while lo < hi {
@@ -87,23 +80,75 @@ impl RedGreenIndex {
     }
 }
 
-/// Dense array of weights (length D) from a sparse vector.
-#[inline]
-fn dense_weights(d: usize, x: &[(u64, f64)]) -> Vec<f64> {
-    let mut w = vec![0.0f64; d];
-    for &(i, xi) in x {
-        debug_assert!((i as usize) < d);
-        if xi > 0.0 {
-            w[i as usize] = xi;
-        }
-    }
-    w
+/// Per-thread dense scratch to avoid allocating/zeroing a length-D vector per sample.
+/// We only touch indices present in x, and only clear those indices afterward.
+#[derive(Default)]
+struct DenseScratch {
+    w: Vec<f64>,
+    touched: Vec<usize>,
 }
 
-/// ERS (AAAI Algorithm 2): K independent fixed-length random sequences.
-/// For each j in 0..K, scan r_{j,1},...,r_{j,L}; take first green. If none, mark E.
-/// Then densify empties by rotating to the next non-empty bucket with a
-/// per-j random offset (data-independent).
+impl DenseScratch {
+    #[inline]
+    fn ensure_len(&mut self, d: usize) {
+        if self.w.len() < d {
+            self.w.resize(d, 0.0);
+        }
+    }
+
+    /// Populate dense weights from sparse `x` and return `mass` computed with the same
+    /// semantics as a dense vector sum (handles duplicate ids by overwrite).
+    #[inline]
+    fn fill_from_sparse_and_mass(&mut self, d: usize, x: &[(u64, f64)]) -> f64 {
+        self.ensure_len(d);
+        self.touched.clear();
+
+        let mut mass = 0.0f64;
+
+        for &(i_u64, xi) in x {
+            let idx = i_u64 as usize;
+            debug_assert!(idx < d);
+
+            if xi <= 0.0 {
+                continue;
+            }
+
+            // Old value currently in scratch.
+            let old = self.w[idx];
+
+            // First time touching this index in this call:
+            // old should be 0.0 because we clear touched entries at end,
+            // but we still track touched explicitly and handle duplicates safely.
+            if old == 0.0 {
+                self.touched.push(idx);
+                self.w[idx] = xi;
+                mass += xi;
+            } else {
+                // Duplicate id within x: overwrite to match old dense_weights semantics.
+                self.w[idx] = xi;
+                mass += xi - old;
+            }
+        }
+
+        mass
+    }
+
+    #[inline]
+    fn clear_touched(&mut self) {
+        for &idx in &self.touched {
+            self.w[idx] = 0.0;
+        }
+        self.touched.clear();
+    }
+}
+
+thread_local! {
+    static ERS_SCRATCH: RefCell<DenseScratch> = RefCell::new(DenseScratch::default());
+}
+
+/// ERS (AAAI Algorithm 2): k independent fixed-length random sequences.
+/// For each j in 0..k, scan r_{j,1},...,r_{j,L}; take first green. If none, mark empty.
+/// Then densify empties by rotating to a non-empty bucket with a per-j random offset.
 pub struct ErsWmh {
     index: RedGreenIndex,
     // tabulation generators
@@ -120,13 +165,7 @@ impl ErsWmh {
         let t_u = tab64_from_rng(rng);
         let t_id = tab64_from_rng(rng);
         let t_rot = tab32_from_rng(rng);
-        Self {
-            index,
-            t_u,
-            t_id,
-            t_rot,
-            k: k as usize,
-        }
+        Self { index, t_u, t_id, t_rot, k: k as usize }
     }
 
     #[inline]
@@ -142,89 +181,109 @@ impl ErsWmh {
         const L_DEFAULT: u32 = 1024;
         let l_per_hash: u32 = max_attempts.map(|v| v as u32).unwrap_or(L_DEFAULT);
 
-        let w = dense_weights(self.index.d(), x);
+        let d = self.index.d();
         let m = self.index.m_total();
-
-        // Degenerate: no mass or M==0 → deterministic, shared fallback
-        let mass: f64 = w.iter().sum();
-        if m == 0.0 || mass == 0.0 {
-            let mut out = Vec::with_capacity(self.k);
-            for j in 0..self.k {
-                let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
-                out.push((fake, f64::INFINITY));
-            }
-            return out;
-        }
 
         // One slot per hash position j
         let mut buckets: Vec<Option<(u64 /*id*/, u32 /*time*/)>> = vec![None; self.k];
 
-        // Fixed-length sequences r_{j,t}; accept first green per j
-        for j in 0..self.k {
-            for t in 1..=l_per_hash {
-                // key = (j, t)  → u ∈ [0,1) → r ∈ [0,M)
-                let key = ((j as u64) << 32) ^ (t as u64);
-                let mut u = to_unit(self.t_u.hash(key));
-                if u >= 1.0 {
-                    // guard against a theoretical 1.0 due to FP edge
-                    u = f64::from_bits(0x3fefffffffffffff);
-                }
-                let r = m * u;
+        // Use per-thread scratch to avoid O(D) alloc/zero and O(D) mass sum.
+        let mut out: Option<Vec<Dart>> = None;
 
-                if self.is_green(&w, r) {
-                    // ID derived from the accepted *draw* r (ties collisions to the same r)
-                    let id = self.t_id.hash(r.to_bits());
-                    buckets[j] = Some((id, t));
-                    break;
+        ERS_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+
+            // Fill dense vector (only touched indices) and compute mass with dense semantics.
+            let mass = scratch.fill_from_sparse_and_mass(d, x);
+
+            // Degenerate: no mass or M==0 → deterministic, shared fallback
+            if m == 0.0 || mass == 0.0 {
+                let mut fallback = Vec::with_capacity(self.k);
+                for j in 0..self.k {
+                    let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
+                    fallback.push((fake, f64::INFINITY));
                 }
+                scratch.clear_touched();
+                out = Some(fallback);
+                return;
             }
-        }
 
-        // If *all* buckets empty (very rare with decent L), fallback
-        if buckets.iter().all(|b| b.is_none()) {
-            let mut out = Vec::with_capacity(self.k);
+            let w = &scratch.w;
+
+            // Fixed-length sequences r_{j,t}; accept first green per j
             for j in 0..self.k {
-                let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
-                out.push((fake, f64::INFINITY));
-            }
-            return out;
-        }
+                for t in 1..=l_per_hash {
+                    // key = (j, t)  → u ∈ [0,1) → r ∈ [0,M)
+                    let key = ((j as u64) << 32) ^ (t as u64);
+                    let mut u = to_unit(self.t_u.hash(key));
+                    if u >= 1.0 {
+                        // guard against a theoretical 1.0 due to FP edge
+                        u = f64::from_bits(0x3fefffffffffffff);
+                    }
+                    let r = m * u;
 
-        // Rotation densification: for each empty j, start from a per-j offset and
-        // scan sequentially (mod k) until a non-empty bucket is found; copy it.
-        for j in 0..self.k {
-            if buckets[j].is_none() {
-                // offset in {1,..,k-1}
-                let offset = (self.t_rot.hash(j as u32) as usize % (self.k.saturating_sub(1)).max(1)) + 1;
-                let mut idx = (j + offset) % self.k;
-
-                // probe up to k-1 positions
-                for _ in 0..(self.k - 1) {
-                    if let Some(val) = buckets[idx] {
-                        buckets[j] = Some(val);
+                    if self.is_green(w, r) {
+                        // ID derived from the accepted *draw* r (ties collisions to the same r)
+                        let id = self.t_id.hash(r.to_bits());
+                        buckets[j] = Some((id, t));
                         break;
                     }
-                    idx += 1;
-                    if idx == self.k {
-                        idx = 0;
-                    }
-                }
-
-                // ultra-rare guard
-                if buckets[j].is_none() {
-                    let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
-                    buckets[j] = Some((fake, u32::MAX));
                 }
             }
-        }
 
-        // Convert to (id, rank) = (hash_id, time as f64)
-        let mut out = Vec::with_capacity(self.k);
-        for j in 0..self.k {
-            let (id, t) = buckets[j].unwrap();
-            out.push((id, t as f64));
-        }
-        out
+            // If *all* buckets empty (very rare with decent L), fallback
+            if buckets.iter().all(|b| b.is_none()) {
+                let mut fallback = Vec::with_capacity(self.k);
+                for j in 0..self.k {
+                    let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
+                    fallback.push((fake, f64::INFINITY));
+                }
+                scratch.clear_touched();
+                out = Some(fallback);
+                return;
+            }
+
+            // Rotation densification: for each empty j, start from a per-j offset and
+            // scan sequentially (mod k) until a non-empty bucket is found; copy it.
+            for j in 0..self.k {
+                if buckets[j].is_none() {
+                    // offset in {1,..,k-1}
+                    let offset =
+                        (self.t_rot.hash(j as u32) as usize % (self.k.saturating_sub(1)).max(1)) + 1;
+                    let mut idx = (j + offset) % self.k;
+
+                    // probe up to k-1 positions
+                    for _ in 0..(self.k - 1) {
+                        if let Some(val) = buckets[idx] {
+                            buckets[j] = Some(val);
+                            break;
+                        }
+                        idx += 1;
+                        if idx == self.k {
+                            idx = 0;
+                        }
+                    }
+
+                    // ultra-rare guard
+                    if buckets[j].is_none() {
+                        let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
+                        buckets[j] = Some((fake, u32::MAX));
+                    }
+                }
+            }
+
+            // Convert to (id, rank) = (hash_id, time as f64)
+            let mut result = Vec::with_capacity(self.k);
+            for j in 0..self.k {
+                let (id, t) = buckets[j].unwrap();
+                result.push((id, t as f64));
+            }
+
+            scratch.clear_touched();
+            out = Some(result);
+        });
+
+        out.expect("ERS_SCRATCH closure must set out")
     }
 
     /// Uses default L (L_DEFAULT).
@@ -238,6 +297,7 @@ impl ErsWmh {
 mod tests {
     use super::*;
     use crate::rng_utils::{mt_from_seed, MtRng};
+
     /// Generate a random weighted set with ids in [0, d)
     fn generate_weighted_set(d: usize, l0: u64, l1: f64, rng: &mut MtRng) -> Vec<(u64, f64)> {
         use std::collections::HashSet;
@@ -356,6 +416,7 @@ mod tests {
             let y = generate_similar_weighted_set(d, &x, rel, &mut rng);
             let j_true = jaccard_similarity(&x, &y);
             println!("true weighted Jaccard: {:?}", j_true);
+
             // Tight caps must dominate BOTH vectors in the comparison
             let m_per_dim = caps_from_sets(d, &[&x, &y]);
 
@@ -369,6 +430,7 @@ mod tests {
             let hits = sk_x.iter().zip(&sk_y).filter(|(a, b)| a.0 == b.0).count();
             let j_est = hits as f64 / k as f64;
             println!("estimated weighted Jaccard: {:?}", j_est);
+
             // σ-aware tolerance
             let sd = (j_true * (1.0 - j_true) / (k as f64)).sqrt();
             let tol = (3.2 * sd).max(1.25 / (k as f64).sqrt());
