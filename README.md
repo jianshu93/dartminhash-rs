@@ -8,9 +8,9 @@
 </div>
 
 # DartMinHash & Efficient Rejection Sampling: Fast Sketching for Weighted Sets
-This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1) and [Efficient Rejection Sampling](https://ojs.aaai.org/index.php/AAAI/article/view/16543) (3) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same tabulation hashing idea (4). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well. 
+This crate provides the implementation of [DartMinHash](https://arxiv.org/abs/2005.11547) (1), [TreeMinHash](https://github.com/oertl/treeminhash/tree/main)(5) and [Efficient Rejection Sampling](https://ojs.aaai.org/index.php/AAAI/article/view/16543) (3) algorithm for estimation of weighted Jaccard similarity. To reproduce the algorithm in the paper, we use the same simple tabulation hashing idea (4). Mersenne Twister PRNG was used as seed.  Other high quality 64-bit hash functions such as xxhash-rust or whyash-rs should also work as well but simple tabulation hashing should be the fastest. 
 
-Note: DartMinHash is significantly faster than (Efficient) Rejection Sampling (2,3) for very sparse vectors, that is the number of nonezero elements (d) is less than ~5% of vector dimension (D) on average for all vectors. This is especially true for large-scale datasets. However, For RS and ERS, a maxmimum value of weight for input vector must be known (dimension-wise). Otherwise, the estimation is significantly biased (6). Therefore, general applicability is limited by the required priori knowledge of sharp upper bounds for $w_{max}(d)$. Also, ERS is not unbiased (3). 
+Note: DartMinHash and TreeMinHash are significantly faster than (Efficient) Rejection Sampling (2,3) for very sparse vectors, that is the number of nonezero elements (d) is less than ~5% of vector dimension (D) on average for all vectors. This is especially true for large-scale datasets. However, For RS and ERS, a maxmimum value of weight for input vector must be known (dimension-wise). Otherwise, the estimation is significantly biased (6). Therefore, general applicability is limited by the required priori knowledge of sharp upper bounds for $w_{max}(d)$. Also, ERS is not unbiased (3). 
 
 # Install & test
 Add below lines to your Cargo.toml dependencies. Official release in crates.io is [here](https://crates.io/crates/dartminhash).
@@ -62,6 +62,52 @@ estimated weighted Jaccard: 0.026123046875
 true weighted Jaccard: 0.005025125628140735
 estimated weighted Jaccard: 0.004638671875
 
+```
+
+Test case to evaulate the accuracy of the TreeMinHash algorithm.
+```bash
+cargo test --release treeminhash_approximates_weighted_jaccard -- --nocapture
+```
+
+
+```bash
+running 2 tests
+true weighted Jaccard: 0.9801980198019987
+estimated weighted Jaccard: 0.9755859375
+true weighted Jaccard: 0.9230769230769356
+estimated weighted Jaccard: 0.91943359375
+true weighted Jaccard: 0.8691588785046728
+estimated weighted Jaccard: 0.865234375
+true weighted Jaccard: 0.8181818181818309
+estimated weighted Jaccard: 0.81640625
+true weighted Jaccard: 0.7391304347826168
+estimated weighted Jaccard: 0.724365234375
+true weighted Jaccard: 0.666666666666671
+estimated weighted Jaccard: 0.6494140625
+true weighted Jaccard: 0.6000000000000044
+estimated weighted Jaccard: 0.593994140625
+true weighted Jaccard: 0.5384615384615556
+estimated weighted Jaccard: 0.53173828125
+true weighted Jaccard: 0.48148148148148084
+estimated weighted Jaccard: 0.47412109375
+true weighted Jaccard: 0.42857142857142577
+estimated weighted Jaccard: 0.43701171875
+true weighted Jaccard: 0.3793103448275808
+estimated weighted Jaccard: 0.372314453125
+true weighted Jaccard: 0.333333333333332
+estimated weighted Jaccard: 0.323486328125
+true weighted Jaccard: 0.25000000000000233
+estimated weighted Jaccard: 0.249267578125
+true weighted Jaccard: 0.17647058823529183
+estimated weighted Jaccard: 0.165283203125
+true weighted Jaccard: 0.11111111111111147
+estimated weighted Jaccard: 0.106201171875
+true weighted Jaccard: 0.05263157894736841
+estimated weighted Jaccard: 0.05078125
+true weighted Jaccard: 0.025641025641025696
+estimated weighted Jaccard: 0.025634765625
+true weighted Jaccard: 0.005025125628140661
+estimated weighted Jaccard: 0.00537109375
 ```
 
 Test case to evaulate the accuracy of RS and ERS algorithms.
@@ -147,6 +193,39 @@ fn main() {
 }
 
 ```
+
+
+TreeMinHash:
+
+```rust
+use dartminhash_rs::TreeMinHash;
+
+fn main() {
+    let mut rng = dartminhash_rs::rng_utils::mt_from_seed(1337);
+    let tmh = TreeMinHash::new_mt(&mut rng, 4096);
+    // Weighted inputs: overlap in IDs, but weights differ a bit
+    let sample_a = vec![
+        (5, 1.2),
+        (17, 0.9),
+        (23, 1.1),
+        (42, 0.95),
+        (100, 1.0),
+    ];
+    let sample_b = vec![
+        (5, 1.0),
+        (17, 1.0),
+        (44, 1.1),
+        (100, 1.05),
+    ];
+
+    let sketch_a = tmh.sketch(&sample_a);
+    let sketch_b = tmh.sketch(&sample_b);
+
+    let est_jaccard = jaccard_estimate_from_minhashes(&sketch_a, &sketch_b);
+    println!("Estimated weighted Jaccard similarity: {:.4}", est_jaccard);
+}
+```
+
 Efficient Rejection Sampling:
 
 ```rust
