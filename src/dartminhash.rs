@@ -52,6 +52,7 @@ mod tests {
 
     use crate::{
         dartminhash::DartMinHash,
+        treeminhash::TreeMinHash,
         rng_utils::{mt_from_seed, MtRng},
         similarity::{
             jaccard_estimate_from_minhashes, jaccard_similarity},
@@ -205,6 +206,71 @@ mod tests {
                 "DMH sparse5: true={j_true:.6}, est={j_est:.6}, err={err:.6}, tol={tol:.6}"
             );
         }
+    }
+
+
+    /// Large raw-count / absolute-weight simulation.
+    ///
+    /// This is intentionally ignored because it is a timing-style stress test,
+    /// not a small unit test. It is meant to mimic absolute weighted UniFrac
+    /// where branch masses are based on raw counts rather than relative
+    /// abundance. In that regime the total weighted-set mass can be very large,
+    /// which is the case where TreeMinHash should be tested against DartMinHash.
+    ///
+    /// Run with:
+    ///
+    ///     cargo test dartminhash_large_weight_sum_vs_treeminhash --release -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn dartminhash_large_weight_sum_vs_treeminhash() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let mut data_rng = mt_from_seed(98_001);
+
+        // Slightly larger sparse set than the ordinary correctness tests.
+        // l1 is deliberately huge to simulate raw-count absolute weighted data.
+        let l0 = 120_000u64;
+        let l1 = 1.0e12f64;
+        let k = 4096u64;
+
+        let x = generate_weighted_set(l0, l1, &mut data_rng);
+        assert_eq!(x.len(), l0 as usize);
+
+        let actual_sum: f64 = x.iter().map(|&(_, w)| w).sum();
+        println!(
+            "large raw-count simulation: nonzeros={}, requested_sum={:.3e}, actual_sum={:.3e}, k={}",
+            l0, l1, actual_sum, k
+        );
+
+        let mut dmh_rng = mt_from_seed(12_345);
+        let dmh = DartMinHash::new_mt(&mut dmh_rng, k);
+        let dmh_start = Instant::now();
+        let sk_dmh = black_box(dmh.sketch(black_box(&x)));
+        let dmh_elapsed = dmh_start.elapsed();
+        assert_eq!(sk_dmh.len(), k as usize);
+        assert!(sk_dmh.iter().all(|&(_, r)| r.is_finite()));
+
+        let mut tmh_rng = mt_from_seed(12_345);
+        let tmh = TreeMinHash::new_mt(&mut tmh_rng, k);
+        let tmh_start = Instant::now();
+        let sk_tmh = black_box(tmh.sketch(black_box(&x)));
+        let tmh_elapsed = tmh_start.elapsed();
+        assert_eq!(sk_tmh.len(), k as usize);
+        assert!(sk_tmh.iter().all(|&(_, r)| r.is_finite()));
+
+        println!("DartMinHash elapsed: {:?}", dmh_elapsed);
+        println!("TreeMinHash elapsed: {:?}", tmh_elapsed);
+        if tmh_elapsed.as_nanos() > 0 {
+            println!(
+                "DMH / TMH elapsed ratio: {:.3}x",
+                dmh_elapsed.as_secs_f64() / tmh_elapsed.as_secs_f64()
+            );
+        }
+
+        // Do not assert timing. Runtime ratios are machine/build dependent.
+        // The purpose of this ignored test is to expose the large-weight regime
+        // clearly under identical input size, total mass, sketch size, and seed.
     }
 
     #[test]
