@@ -583,7 +583,7 @@ mod tests {
     /// This is intentionally ignored because it is a timing-style stress test,
     /// not a small unit test. It mirrors the companion test in dartminhash.rs
     /// and is useful for testing the regime where raw counts create very large
-    /// total branch mass.
+    /// total set mass.
     ///
     /// Run with:
     ///

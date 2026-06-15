@@ -212,9 +212,8 @@ mod tests {
     /// Large raw-count / absolute-weight simulation.
     ///
     /// This is intentionally ignored because it is a timing-style stress test,
-    /// not a small unit test. It is meant to mimic absolute weighted UniFrac
-    /// where branch masses are based on raw counts rather than relative
-    /// abundance. In that regime the total weighted-set mass can be very large,
+    /// not a small unit test. It is meant to mimic large-weight scenarios,
+    /// where the sum of set masses are very large,
     /// which is the case where TreeMinHash should be tested against DartMinHash.
     ///
     /// Run with:
