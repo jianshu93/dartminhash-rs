@@ -14,7 +14,11 @@ use tab_hash::Tab64Simple;
 use crate::hash_utils::tab64_from_rng;
 use crate::rng_utils::MtRng;
 
-/// Same sketch representation as DartMinHash: k slots of `(id, rank)`.
+/// Same sketch representation as DartMinHash: k slots of `(fingerprint, rank)`.
+///
+/// The fingerprint is a hash of the accepted weighted sample, not just the
+/// original feature id. This makes id-only collision counting valid for weighted
+/// Jaccard estimation and one-bit sketches.
 pub type MinHashSketch = Vec<(u64, f64)>;
 
 #[derive(Clone, Copy, Debug)]
@@ -261,6 +265,8 @@ pub struct TreeMinHash {
     k: u32,
     h0: Tab64Simple,
     h1: Tab64Simple,
+    sample_id_hasher: Tab64Simple,
+    sample_point_hasher: Tab64Simple,
     tree: Vec<Node>,
     num_non_leaf_nodes: u32,
     initial_limit_factor: f64,
@@ -301,11 +307,15 @@ impl TreeMinHash {
 
         let h0 = tab64_from_rng(rng);
         let h1 = tab64_from_rng(rng);
+        let sample_id_hasher = tab64_from_rng(rng);
+        let sample_point_hasher = tab64_from_rng(rng);
 
         Self {
             k: k as u32,
             h0,
             h1,
+            sample_id_hasher,
+            sample_point_hasher,
             tree,
             num_non_leaf_nodes,
             initial_limit_factor,
@@ -313,8 +323,13 @@ impl TreeMinHash {
         }
     }
 
-    /// Return k weighted MinHash slots.  The rank component is useful for
-    /// debugging and compatibility; Jaccard estimation only needs id collisions.
+    /// Return k weighted MinHash slots.
+    ///
+    /// The first component is a fingerprint of the accepted weighted sample
+    /// `(feature_id, point)`.  Counting first-component collisions therefore
+    /// estimates weighted Jaccard, and the low bit can be used for one-bit
+    /// MinHash/Hamming sketches. The rank component is kept for debugging and
+    /// compatibility.
     pub fn sketch(&self, x: &[(u64, f64)]) -> MinHashSketch {
         let weight_sum: f64 = x.iter().filter(|(_, w)| *w > 0.0).map(|(_, w)| *w).sum();
         if !(weight_sum > 0.0) || !weight_sum.is_finite() {
@@ -375,14 +390,14 @@ impl TreeMinHash {
                             let idx = permutation_stream.next(&mut rng) as usize;
                             if point < result[idx].1 {
                                 if !(acceptance_probability < 1.0) {
-                                    result[idx] = (id, point);
+                                    result[idx] = (self.sample_fingerprint(id, point), point);
                                 } else {
                                     let stream_id = ((node_idx as u64) << 32) | (idx as u64);
                                     let mut rng2 = self.rng(id, stream_id);
                                     let mut p = point;
                                     while p < result[idx].1 {
                                         if rng2.uniform_open01() < acceptance_probability {
-                                            result[idx] = (id, p);
+                                            result[idx] = (self.sample_fingerprint(id, p), p);
                                             break;
                                         }
                                         p += rng2.exponential1() * inv_rate * (self.k as f64);
@@ -419,6 +434,20 @@ impl TreeMinHash {
                 }
             }
         }
+    }
+
+    /// Return a one-bit TreeMinHash sketch compatible with
+    /// `onebit_minhash_jaccard_estimate`.
+    pub fn onebit_minhash(&self, x: &[(u64, f64)]) -> Vec<bool> {
+        self.sketch(x)
+            .into_iter()
+            .map(|(fingerprint, _)| (fingerprint & 1) == 1)
+            .collect()
+    }
+
+    #[inline]
+    fn sample_fingerprint(&self, id: u64, point: f64) -> u64 {
+        self.sample_id_hasher.hash(id) ^ self.sample_point_hasher.hash(point.to_bits())
     }
 
     #[inline]
@@ -577,7 +606,6 @@ mod tests {
         }
     }
 
-
     /// Large raw-count / absolute-weight simulation.
     ///
     /// This is intentionally ignored because it is a timing-style stress test,
@@ -658,5 +686,26 @@ mod tests {
         let sk = tmh.sketch(&[(1, 0.0), (2, -1.0)]);
         assert_eq!(sk.len(), 16);
         assert!(sk.iter().all(|&(id, rank)| id == 0 && rank.is_infinite()));
+    }
+
+    #[test]
+    fn treeminhash_distinguishes_shared_id_different_weight_samples() {
+        let mut rng = mt_from_seed(19);
+        let tmh = TreeMinHash::new_mt(&mut rng, 4096);
+
+        let x = vec![(1, 10.0)];
+        let y = vec![(1, 5.0)];
+        let j_true = jaccard_similarity(&x, &y);
+        assert_eq!(j_true, 0.5);
+
+        let sk_x = tmh.sketch(&x);
+        let sk_y = tmh.sketch(&y);
+        let j_est = jaccard_estimate_from_minhashes(&sk_x, &sk_y);
+        let err = (j_true - j_est).abs();
+
+        assert!(
+            err <= 0.05,
+            "single shared id with unequal weights: true={j_true:.6}, est={j_est:.6}, err={err:.6}"
+        );
     }
 }
