@@ -18,6 +18,24 @@ Add below lines to your Cargo.toml dependencies. Official release in crates.io i
 dartminhash = "0.1"
 ```
 
+To test the crate with mixed tabulation hashing, enable the `mixed_tab` feature:
+
+```bash
+cargo test --release --features mixed_tab dartminhash_approximates_weighted_jaccard -- --nocapture
+```
+
+With this feature enabled, DartMinHash, TreeMinHash, and Efficient Rejection
+Sampling use mixed tabulation hashers for their tabulation-based random streams.
+The default build keeps the original simple-tabulation behavior.
+
+For a small multi-seed DartMinHash comparison between simple and mixed
+tabulation, run:
+
+```bash
+cargo test --release --no-default-features dartminhash_multi_seed_accuracy_sweep -- --ignored --nocapture
+cargo test --release --features mixed_tab dartminhash_multi_seed_accuracy_sweep -- --ignored --nocapture
+```
+
 Test case to evaulate the accuracy of the DartMinHash algorithm.
 ```bash
 cargo test --release dartminhash_approximates_weighted_jaccard -- --nocapture

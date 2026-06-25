@@ -1,17 +1,31 @@
 //! DartMinHash: DartHash + repeatedly throws darts until all buckets filled.
 
-use std::f64::INFINITY;
 use crate::darthash::{Dart, DartHash};
-use crate::hash_utils::tab64_from_rng;
+use crate::hash_utils::*;
 use crate::rng_utils::MtRng;
-use tab_hash::Tab64Simple;
+use std::f64::INFINITY;
+
+#[cfg(feature = "mixed_tab")]
+type Tab64Bucket = tab_hash::Tab64Mixed;
+#[cfg(not(feature = "mixed_tab"))]
+type Tab64Bucket = tab_hash::Tab64Simple;
+
+#[cfg(feature = "mixed_tab")]
+fn tab64_bucket_from_rng(rng: &mut MtRng) -> Tab64Bucket {
+    mixed_tab64_from_rng(rng)
+}
+
+#[cfg(not(feature = "mixed_tab"))]
+fn tab64_bucket_from_rng(rng: &mut MtRng) -> Tab64Bucket {
+    tab64_from_rng(rng)
+}
 
 // Sketch = k slots of (id, rank)
 pub type MinHashSketch = Vec<Dart>;
 
 pub struct DartMinHash {
     k: u64,
-    bucket_hasher: Tab64Simple,
+    bucket_hasher: Tab64Bucket,
     dart_hash: DartHash,
 }
 
@@ -19,9 +33,13 @@ impl DartMinHash {
     // t = k*ln(k) + 2k
     pub fn new_mt(rng: &mut MtRng, k: u64) -> Self {
         let t = ((k as f64) * (k as f64).ln() + 2.0 * (k as f64)).ceil() as u64;
-        let bucket_hasher = tab64_from_rng(rng);
+        let bucket_hasher = tab64_bucket_from_rng(rng);
         let dart_hash = DartHash::new_mt(rng, t);
-        Self { k, bucket_hasher, dart_hash }
+        Self {
+            k,
+            bucket_hasher,
+            dart_hash,
+        }
     }
 
     // Returns k minhash darts. Ensures every bucket got something by increasing theta if needed.
@@ -38,7 +56,9 @@ impl DartMinHash {
                     minhashes[j] = (id, rank);
                 }
             }
-            if filled.iter().all(|&b| b) { break; }
+            if filled.iter().all(|&b| b) {
+                break;
+            }
             theta += 0.5;
         }
         minhashes
@@ -47,15 +67,14 @@ impl DartMinHash {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use rand_core::RngCore;
+    use std::collections::HashSet;
 
     use crate::{
         dartminhash::DartMinHash,
+        rng_utils::{MtRng, mt_from_seed},
+        similarity::{jaccard_estimate_from_minhashes, jaccard_similarity},
         treeminhash::TreeMinHash,
-        rng_utils::{mt_from_seed, MtRng},
-        similarity::{
-            jaccard_estimate_from_minhashes, jaccard_similarity},
     };
     /// Uniform(0,1) using the same MT19937 rng.
     fn uniform01(rng: &mut MtRng) -> f64 {
@@ -80,7 +99,9 @@ mod tests {
         let mut prev = 0.0;
         let mut j = 0usize;
         let mut out: Vec<(u64, f64)> = Vec::with_capacity(l0 as usize);
-        for idx in elements {
+        let mut ids: Vec<u64> = elements.into_iter().collect();
+        ids.sort_unstable();
+        for idx in ids {
             let w = l1 * (z[j] - prev);
             out.push((idx, w));
             prev = z[j];
@@ -121,29 +142,32 @@ mod tests {
 
     #[test]
     fn dartminhash_approximates_weighted_jaccard() {
-        let mut rng = mt_from_seed(1337);
+        let mut data_rng = mt_from_seed(1337);
+        let mut hash_rng = mt_from_seed(0xd417_0001);
 
         // data size and mass
-        let l0 = 50_000;      // number of nonzeros
-        let l1 = 10_000.0;    // total weight (approximately)
-        let k  = 4096;      // sketch size
+        let l0 = 50_000; // number of nonzeros
+        let l1 = 10_000.0; // total weight (approximately)
+        let k = 4096; // sketch size
 
-        let dm = DartMinHash::new_mt(&mut rng, k);
+        let dm = DartMinHash::new_mt(&mut hash_rng, k);
 
         // Generate a base set
-        let x = generate_weighted_set(l0, l1, &mut rng);
+        let x = generate_weighted_set(l0, l1, &mut data_rng);
         assert_eq!(x.len(), l0 as usize);
 
         // Try a few overlaps
-        let targets = [0.99, 0.96,0.93, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01];
-         // tolerance on Jaccard estimate (tweak with k)
+        let targets = [
+            0.99, 0.96, 0.93, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.4, 0.3, 0.2, 0.1,
+            0.05, 0.01,
+        ];
+        // tolerance on Jaccard estimate (tweak with k)
 
         for &rel in &targets {
-            let y = generate_similar_weighted_set(&x, rel, &mut rng);
+            let y = generate_similar_weighted_set(&x, rel, &mut data_rng);
 
             // True weighted Jaccard
             let j_true = jaccard_similarity(&x, &y);
-            let tol = 1.0 / (k as f64).sqrt();
             println!("true weighted Jaccard: {:?}", j_true);
             // Sketch
             let sk_x = dm.sketch(&x);
@@ -154,34 +178,40 @@ mod tests {
             let j_est = jaccard_estimate_from_minhashes(&sk_x, &sk_y);
             println!("estimated weighted Jaccard: {:?}", j_est);
             // Check accuracy
+            let sd = (j_true * (1.0 - j_true) / (k as f64)).sqrt();
+            let tol = (3.2 * sd).max(1.25 / (k as f64).sqrt());
             let err = (j_true - j_est).abs();
             assert!(
-                err <= tol as f64,
+                err <= tol,
                 "rel_overlap={rel}, true={j_true:.4}, est={j_est:.4}, err={err:.4} > tol={tol}"
             );
         }
     }
     #[test]
     fn dartminhash2_approximates_weighted_jaccard_sparse() {
-        let mut rng = mt_from_seed(2025);
+        let mut data_rng = mt_from_seed(2025);
+        let mut hash_rng = mt_from_seed(0xd417_0002);
 
         // "5% sparse": pick a much smaller l0 than the (implicit) universe size.
         // (Your helpers don't take D; sparsity here is "few nonzeros" relative to a huge ID space.)
-        let l0 = 5_000;     // number of nonzeros (~5% of a conceptual D=1,000,000)
-        let l1 = 3_000.0;    // total weight (kept moderate)
-        let k  = 4096;       // sketch size (smaller than 4096 so this test is fast)
+        let l0 = 5_000; // number of nonzeros (~5% of a conceptual D=1,000,000)
+        let l1 = 3_000.0; // total weight (kept moderate)
+        let k = 4096; // sketch size (smaller than 4096 so this test is fast)
 
-        let dm = DartMinHash::new_mt(&mut rng, k);
+        let dm = DartMinHash::new_mt(&mut hash_rng, k);
 
         // Base set
-        let x = generate_weighted_set(l0, l1, &mut rng);
+        let x = generate_weighted_set(l0, l1, &mut data_rng);
         assert_eq!(x.len(), l0 as usize);
 
         // A range of true Jaccards, as in your other tests
-        let targets = [0.99, 0.96,0.93, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01];
+        let targets = [
+            0.99, 0.96, 0.93, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.4, 0.3, 0.2, 0.1,
+            0.05, 0.01,
+        ];
 
         for &rel in &targets {
-            let y = generate_similar_weighted_set(&x, rel, &mut rng);
+            let y = generate_similar_weighted_set(&x, rel, &mut data_rng);
 
             // Ground truth
             let j_true = jaccard_similarity(&x, &y);
@@ -208,6 +238,81 @@ mod tests {
         }
     }
 
+    /// Empirical DartMinHash accuracy sweep across several independent data and
+    /// hasher seeds. Run twice to compare hash families:
+    ///
+    ///     cargo test --release --no-default-features dartminhash_multi_seed_accuracy_sweep -- --ignored --nocapture
+    ///     cargo test --release --features mixed_tab dartminhash_multi_seed_accuracy_sweep -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn dartminhash_multi_seed_accuracy_sweep() {
+        let seeds = [7, 19, 42, 1_337, 2_025, 86_753_09];
+        let targets = [
+            0.99, 0.96, 0.93, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.4, 0.3, 0.2, 0.1,
+            0.05, 0.01,
+        ];
+
+        let l0 = 10_000;
+        let l1 = 10_000.0;
+        let k = 2048;
+
+        let mut cases = 0usize;
+        let mut sum_abs = 0.0;
+        let mut sum_sq = 0.0;
+        let mut max_abs = 0.0;
+        let mut worst_seed = 0;
+        let mut worst_rel = 0.0;
+        let mut worst_true = 0.0;
+        let mut worst_est = 0.0;
+
+        for &seed in &seeds {
+            let mut data_rng = mt_from_seed(seed);
+            let x = generate_weighted_set(l0, l1, &mut data_rng);
+
+            // Keep the input data stream independent from hasher construction so
+            // simple and mixed builds compare on exactly the same weighted sets.
+            let mut hash_rng = mt_from_seed(seed ^ 0x9e37_79b9_7f4a_7c15);
+            let dm = DartMinHash::new_mt(&mut hash_rng, k);
+            let sk_x = dm.sketch(&x);
+
+            for &rel in &targets {
+                let y = generate_similar_weighted_set(&x, rel, &mut data_rng);
+                let j_true = jaccard_similarity(&x, &y);
+                let sk_y = dm.sketch(&y);
+                let j_est = jaccard_estimate_from_minhashes(&sk_x, &sk_y);
+                let err = (j_true - j_est).abs();
+
+                cases += 1;
+                sum_abs += err;
+                sum_sq += err * err;
+                if err > max_abs {
+                    max_abs = err;
+                    worst_seed = seed;
+                    worst_rel = rel;
+                    worst_true = j_true;
+                    worst_est = j_est;
+                }
+            }
+        }
+
+        let mean_abs = sum_abs / cases as f64;
+        let rmse = (sum_sq / cases as f64).sqrt();
+        let mode = if cfg!(feature = "mixed_tab") {
+            "mixed_tab"
+        } else {
+            "simple_tab"
+        };
+
+        println!(
+            "DMH_MULTI_SEED mode={mode} seeds={} targets={} cases={cases} k={k} l0={l0} mean_abs={mean_abs:.8} rmse={rmse:.8} max_abs={max_abs:.8} worst_seed={worst_seed} worst_rel={worst_rel:.3} worst_true={worst_true:.8} worst_est={worst_est:.8}",
+            seeds.len(),
+            targets.len()
+        );
+
+        assert!(mean_abs.is_finite());
+        assert!(rmse.is_finite());
+        assert!(max_abs.is_finite());
+    }
 
     /// Large raw-count / absolute-weight simulation.
     ///

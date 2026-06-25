@@ -4,7 +4,36 @@ use std::f64::INFINITY;
 
 use crate::hash_utils::*;
 use crate::rng_utils::MtRng;
-use tab_hash::{Tab32Simple, Tab64Simple};
+
+#[cfg(feature = "mixed_tab")]
+type Tab32Dart = tab_hash::Tab32Mixed;
+#[cfg(not(feature = "mixed_tab"))]
+type Tab32Dart = tab_hash::Tab32Simple;
+
+#[cfg(feature = "mixed_tab")]
+type Tab64Dart = tab_hash::Tab64Mixed;
+#[cfg(not(feature = "mixed_tab"))]
+type Tab64Dart = tab_hash::Tab64Simple;
+
+#[cfg(feature = "mixed_tab")]
+fn tab32_dart_from_rng(rng: &mut MtRng) -> Tab32Dart {
+    mixed_tab32_from_rng(rng)
+}
+
+#[cfg(not(feature = "mixed_tab"))]
+fn tab32_dart_from_rng(rng: &mut MtRng) -> Tab32Dart {
+    tab32_from_rng(rng)
+}
+
+#[cfg(feature = "mixed_tab")]
+fn tab64_dart_from_rng(rng: &mut MtRng) -> Tab64Dart {
+    mixed_tab64_from_rng(rng)
+}
+
+#[cfg(not(feature = "mixed_tab"))]
+fn tab64_dart_from_rng(rng: &mut MtRng) -> Tab64Dart {
+    tab64_from_rng(rng)
+}
 
 // A single dart = (hashed_id, rank)
 pub type Dart = (u64, f64);
@@ -12,16 +41,16 @@ pub type Dart = (u64, f64);
 pub struct DartHash {
     t: u64,
     // 32-bit tabulation hashers
-    t_nu: Tab32Simple,
-    t_rho: Tab32Simple,
-    t_w: Tab32Simple,
-    t_r: Tab32Simple,
+    t_nu: Tab32Dart,
+    t_rho: Tab32Dart,
+    t_w: Tab32Dart,
+    t_r: Tab32Dart,
     // 64-bit tabulation hashers
-    t_i: Tab64Simple,
-    t_p: Tab64Simple,
-    t_q: Tab64Simple,
-    f_h: Tab64Simple,
-    m_h: Tab64Simple,
+    t_i: Tab64Dart,
+    t_p: Tab64Dart,
+    t_q: Tab64Dart,
+    f_h: Tab64Dart,
+    m_h: Tab64Dart,
     // Precomputed powers of 2 and poisson CDF
     powers_of_two: Vec<f64>,
     neg_powers_of_two: Vec<f64>,
@@ -31,16 +60,16 @@ pub struct DartHash {
 impl DartHash {
     // t: expected number of darts (usually k ln k + 2k)
     pub fn new_mt(rng: &mut MtRng, t: u64) -> Self {
-        let t_nu = tab32_from_rng(rng);
-        let t_rho = tab32_from_rng(rng);
-        let t_w = tab32_from_rng(rng);
-        let t_r = tab32_from_rng(rng);
+        let t_nu = tab32_dart_from_rng(rng);
+        let t_rho = tab32_dart_from_rng(rng);
+        let t_w = tab32_dart_from_rng(rng);
+        let t_r = tab32_dart_from_rng(rng);
 
-        let t_i = tab64_from_rng(rng);
-        let t_p = tab64_from_rng(rng);
-        let t_q = tab64_from_rng(rng);
-        let f_h = tab64_from_rng(rng);
-        let m_h = tab64_from_rng(rng);
+        let t_i = tab64_dart_from_rng(rng);
+        let t_p = tab64_dart_from_rng(rng);
+        let t_q = tab64_dart_from_rng(rng);
+        let f_h = tab64_dart_from_rng(rng);
+        let m_h = tab64_dart_from_rng(rng);
 
         // Precompute 2^k up to ~1000
         let mut pow2 = Vec::with_capacity(1000);
@@ -97,7 +126,9 @@ impl DartHash {
         let rho_upper = ((1.0 + max_rank).log2().floor()).max(0.0) as u32;
 
         for &(i, xi) in x {
-            if xi <= 0.0 { continue; }
+            if xi <= 0.0 {
+                continue;
+            }
 
             let i_hash = self.t_i.hash(i);
             let nu_upper = ((1.0 + (self.t as f64) * xi).log2().floor()).max(0.0) as u32;
@@ -118,13 +149,17 @@ impl DartHash {
                     let mut w0 = w_base;
                     let w_max = if rho < 32 { 1u32 << rho } else { 1u32 << 31 };
                     for w in 0..w_max {
-                        if xi < w0 { break; }
+                        if xi < w0 {
+                            break;
+                        }
                         let w_hash = self.t_w.hash(w);
                         let mut r0 = r_base;
                         let r_max = if nu < 32 { 1u32 << nu } else { 1u32 << 31 };
 
                         for r in 0..r_max {
-                            if max_rank < r0 { break; }
+                            if max_rank < r0 {
+                                break;
+                            }
 
                             let area_hash = (w_hash as u64) ^ (self.t_r.hash(r) as u64);
                             let z = i_hash ^ region_hash ^ area_hash;
@@ -132,14 +167,17 @@ impl DartHash {
                             // Poisson draw via CDF table
                             let p_z = to_unit(self.t_p.hash(z));
                             let mut p_count: usize = 0;
-                            while p_count < self.poisson_cdf.len() && p_z > self.poisson_cdf[p_count] {
+                            while p_count < self.poisson_cdf.len()
+                                && p_z > self.poisson_cdf[p_count]
+                            {
                                 p_count += 1;
                             }
 
                             let mut q_idx: usize = 0;
                             while q_idx < p_count {
                                 // combine z & q to make unique
-                                let z_q = z ^ ((q_idx as u64) << 56)
+                                let z_q = z
+                                    ^ ((q_idx as u64) << 56)
                                     ^ ((q_idx as u64) << 48)
                                     ^ ((q_idx as u64) << 40)
                                     ^ ((q_idx as u64) << 32)
@@ -150,7 +188,7 @@ impl DartHash {
 
                                 let (u_w, u_r) = to_units(self.t_q.hash(z_q));
                                 let weight = w0 + delta_nu * u_w;
-                                let rank   = r0 + delta_rho * u_r;
+                                let rank = r0 + delta_rho * u_r;
 
                                 if weight < xi && rank < max_rank {
                                     darts.push((self.f_h.hash(z_q), rank));

@@ -4,15 +4,30 @@
 //! `weighted_minwise_hashing.hpp`, adapted to the API style used by this crate:
 //! sparse weighted vectors are `&[(u64, f64)]`, and sketches are `Vec<(u64, f64)>`.
 //!
-//! Randomness is provided by simple tabulation hashing (`tab_hash::Tab64Simple`).
-//! Each logical random stream is addressed by `(feature_id, stream_id)` and then
+//! Randomness is provided by tabulation hashing. By default this uses simple
+//! tabulation; with the `mixed_tab` feature it uses mixed tabulation. Each
+//! logical random stream is addressed by `(feature_id, stream_id)` and then
 //! expanded with a counter.  This keeps sketching stateless and deterministic.
 
 use std::f64::INFINITY;
-use tab_hash::Tab64Simple;
 
-use crate::hash_utils::tab64_from_rng;
+use crate::hash_utils::*;
 use crate::rng_utils::MtRng;
+
+#[cfg(feature = "mixed_tab")]
+type Tab64Tree = tab_hash::Tab64Mixed;
+#[cfg(not(feature = "mixed_tab"))]
+type Tab64Tree = tab_hash::Tab64Simple;
+
+#[cfg(feature = "mixed_tab")]
+fn tab64_tree_from_rng(rng: &mut MtRng) -> Tab64Tree {
+    mixed_tab64_from_rng(rng)
+}
+
+#[cfg(not(feature = "mixed_tab"))]
+fn tab64_tree_from_rng(rng: &mut MtRng) -> Tab64Tree {
+    tab64_from_rng(rng)
+}
 
 /// Same sketch representation as DartMinHash: k slots of `(fingerprint, rank)`.
 ///
@@ -140,16 +155,16 @@ fn next_toward_zero(x: f64) -> f64 {
     }
 }
 
-/// A deterministic random stream based on simple tabulation hashing.
+/// A deterministic random stream based on tabulation hashing.
 ///
 /// The C++ reference uses a bit-stream RNG seeded by `(id, stream_id)`.  Here we
 /// generate each 64-bit word by tab-hashing a mixed key derived from
-/// `(id, stream_id, counter)`.  All hashers are `Tab64Simple` tables seeded in
+/// `(id, stream_id, counter)`.  All hashers are tabulation tables seeded in
 /// `TreeMinHash::new_mt`.
 #[derive(Clone)]
 struct TabStream<'a> {
-    h0: &'a Tab64Simple,
-    h1: &'a Tab64Simple,
+    h0: &'a Tab64Tree,
+    h1: &'a Tab64Tree,
     id: u64,
     stream_id: u64,
     counter: u64,
@@ -157,7 +172,7 @@ struct TabStream<'a> {
 
 impl<'a> TabStream<'a> {
     #[inline]
-    fn new(h0: &'a Tab64Simple, h1: &'a Tab64Simple, id: u64, stream_id: u64) -> Self {
+    fn new(h0: &'a Tab64Tree, h1: &'a Tab64Tree, id: u64, stream_id: u64) -> Self {
         Self {
             h0,
             h1,
@@ -263,10 +278,10 @@ impl PermutationStream {
 /// TreeMinHash sketcher for weighted Jaccard similarity.
 pub struct TreeMinHash {
     k: u32,
-    h0: Tab64Simple,
-    h1: Tab64Simple,
-    sample_id_hasher: Tab64Simple,
-    sample_point_hasher: Tab64Simple,
+    h0: Tab64Tree,
+    h1: Tab64Tree,
+    sample_id_hasher: Tab64Tree,
+    sample_point_hasher: Tab64Tree,
     tree: Vec<Node>,
     num_non_leaf_nodes: u32,
     initial_limit_factor: f64,
@@ -274,7 +289,7 @@ pub struct TreeMinHash {
 }
 
 impl TreeMinHash {
-    /// Build with MT19937-seeded simple tabulation hash tables.
+    /// Build with MT19937-seeded tabulation hash tables.
     ///
     /// Defaults match the C++ constructor: `max = f64::MAX`, `factor = 0.5`,
     /// and first-run success probability `0.9`.
@@ -305,10 +320,10 @@ impl TreeMinHash {
             factors.push(k_f / (k_f - (i as f64) - 1.0));
         }
 
-        let h0 = tab64_from_rng(rng);
-        let h1 = tab64_from_rng(rng);
-        let sample_id_hasher = tab64_from_rng(rng);
-        let sample_point_hasher = tab64_from_rng(rng);
+        let h0 = tab64_tree_from_rng(rng);
+        let h1 = tab64_tree_from_rng(rng);
+        let sample_id_hasher = tab64_tree_from_rng(rng);
+        let sample_point_hasher = tab64_tree_from_rng(rng);
 
         Self {
             k: k as u32,
@@ -490,7 +505,9 @@ mod tests {
         let mut prev = 0.0;
         let mut j = 0usize;
         let mut out = Vec::with_capacity(l0 as usize);
-        for idx in elements {
+        let mut ids: Vec<u64> = elements.into_iter().collect();
+        ids.sort_unstable();
+        for idx in ids {
             let w = l1 * (z[j] - prev);
             out.push((idx, w));
             prev = z[j];
@@ -530,7 +547,8 @@ mod tests {
 
     #[test]
     fn treeminhash_approximates_weighted_jaccard() {
-        let mut rng = mt_from_seed(1337);
+        let mut data_rng = mt_from_seed(1337);
+        let mut hash_rng = mt_from_seed(0x7eee_0001);
 
         // Same structure as the DartMinHash test, with slightly reduced size so
         // `cargo test` remains practical in debug mode.
@@ -538,8 +556,8 @@ mod tests {
         let l1 = 10_000.0;
         let k = 4096;
 
-        let tmh = TreeMinHash::new_mt(&mut rng, k);
-        let x = generate_weighted_set(l0, l1, &mut rng);
+        let tmh = TreeMinHash::new_mt(&mut hash_rng, k);
+        let x = generate_weighted_set(l0, l1, &mut data_rng);
         assert_eq!(x.len(), l0 as usize);
 
         let targets = [
@@ -548,7 +566,7 @@ mod tests {
         ];
 
         for &rel in &targets {
-            let y = generate_similar_weighted_set(&x, rel, &mut rng);
+            let y = generate_similar_weighted_set(&x, rel, &mut data_rng);
             let j_true = jaccard_similarity(&x, &y);
             println!("true weighted Jaccard: {:?}", j_true);
 
@@ -571,14 +589,15 @@ mod tests {
 
     #[test]
     fn treeminhash_approximates_weighted_jaccard_sparse() {
-        let mut rng = mt_from_seed(2025);
+        let mut data_rng = mt_from_seed(2025);
+        let mut hash_rng = mt_from_seed(0x7eee_0002);
 
         let l0 = 5_000;
         let l1 = 3_000.0;
         let k = 4096;
 
-        let tmh = TreeMinHash::new_mt(&mut rng, k);
-        let x = generate_weighted_set(l0, l1, &mut rng);
+        let tmh = TreeMinHash::new_mt(&mut hash_rng, k);
+        let x = generate_weighted_set(l0, l1, &mut data_rng);
         assert_eq!(x.len(), l0 as usize);
 
         let targets = [
@@ -587,7 +606,7 @@ mod tests {
         ];
 
         for &rel in &targets {
-            let y = generate_similar_weighted_set(&x, rel, &mut rng);
+            let y = generate_similar_weighted_set(&x, rel, &mut data_rng);
             let j_true = jaccard_similarity(&x, &y);
 
             let sk_x = tmh.sketch(&x);
