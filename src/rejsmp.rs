@@ -3,8 +3,8 @@
 //! Implements:
 //!   - ERS (Li & Li 2021): k independent fixed-length sequences
 //!     r_{j,1..L} per hash position j; take the first green if any, otherwise mark
-//!     empty; then densify empties by rotating to a non-empty bucket with a
-//!     per-j random offset (data-independent).
+//!     empty; then densify empties with a shared, data-independent candidate
+//!     sequence as specified by Algorithm 3.
 //!
 //! Inputs: sparse weighted vector `&[(u64, f64)]` where id ∈ [0, D) and weight ≥ 0.
 //! Randomness: purely via Tab32/Tab64 tabulation hashing (no stateful RNG required).
@@ -15,12 +15,6 @@
 //! *tight* per-dimension maxima across the dataset: `m_i = max_s x_i(s)`.
 //! Using tight caps reduces total M = sum_i m_i, increases acceptance probability,
 //! and lets you use much smaller L in ERS.
-//!
-//! PERFORMANCE NOTE (this version):
-//! - Removes the hot O(log D) binary search over prefix-sums for each draw by using
-//!   a Walker alias table to sample the interval i in O(1).
-//! - Keeps your original semantics for ID hashing: id = hash(r.to_bits()) where
-//!   r = base[i] + off, off ~ Uniform(0, m_i).
 
 use crate::hash_utils::*;
 use crate::rng_utils::MtRng;
@@ -28,24 +22,9 @@ use crate::rng_utils::MtRng;
 use std::cell::RefCell;
 
 #[cfg(feature = "mixed_tab")]
-type Tab32Ers = tab_hash::Tab32Mixed;
-#[cfg(not(feature = "mixed_tab"))]
-type Tab32Ers = tab_hash::Tab32Simple;
-
-#[cfg(feature = "mixed_tab")]
 type Tab64Ers = tab_hash::Tab64Mixed;
 #[cfg(not(feature = "mixed_tab"))]
 type Tab64Ers = tab_hash::Tab64Simple;
-
-#[cfg(feature = "mixed_tab")]
-fn tab32_ers_from_rng(rng: &mut MtRng) -> Tab32Ers {
-    mixed_tab32_from_rng(rng)
-}
-
-#[cfg(not(feature = "mixed_tab"))]
-fn tab32_ers_from_rng(rng: &mut MtRng) -> Tab32Ers {
-    tab32_from_rng(rng)
-}
 
 #[cfg(feature = "mixed_tab")]
 fn tab64_ers_from_rng(rng: &mut MtRng) -> Tab64Ers {
@@ -65,17 +44,12 @@ pub type Dart = (u64, f64);
 /// We store:
 /// - base[i] = sum_{h<i} m_h  (left boundary)
 /// - cap[i]  = m_i
-/// And a Walker alias table to sample i with P(i)=m_i/M in O(1).
 #[derive(Clone)]
 pub struct RedGreenIndex {
     base: Vec<f64>,
     cap: Vec<f64>,
     d: usize,
     m_total: f64,
-
-    // Walker alias table for discrete distribution p_i = cap[i]/m_total
-    prob: Vec<f64>,  // in [0,1]
-    alias: Vec<u32>, // in [0,d)
 }
 
 impl RedGreenIndex {
@@ -91,65 +65,11 @@ impl RedGreenIndex {
             base.push(acc);
             acc += mi;
         }
-        let m_total = acc;
-
-        // copy caps
-        let cap = m_per_dim.to_vec();
-
-        let mut prob = vec![0.0f64; d];
-        let mut alias = vec![0u32; d];
-
-        // Degenerate cases
-        if d == 0 || m_total == 0.0 {
-            return Self {
-                base,
-                cap,
-                d,
-                m_total,
-                prob,
-                alias,
-            };
-        }
-
-        // Walker alias build
-        // scaled probabilities: q_i = p_i * d = (cap[i]/m_total) * d
-        let mut q: Vec<f64> = cap.iter().map(|&mi| (mi / m_total) * (d as f64)).collect();
-
-        let mut small = Vec::<usize>::new();
-        let mut large = Vec::<usize>::new();
-        for (i, &qi) in q.iter().enumerate() {
-            if qi < 1.0 {
-                small.push(i);
-            } else {
-                large.push(i);
-            }
-        }
-
-        while let (Some(s), Some(l)) = (small.pop(), large.pop()) {
-            prob[s] = q[s]; // < 1
-            alias[s] = l as u32; // redirect
-
-            q[l] = (q[l] + q[s]) - 1.0;
-            if q[l] < 1.0 {
-                small.push(l);
-            } else {
-                large.push(l);
-            }
-        }
-
-        // leftovers
-        for i in small.into_iter().chain(large.into_iter()) {
-            prob[i] = 1.0;
-            alias[i] = i as u32;
-        }
-
         Self {
             base,
-            cap,
+            cap: m_per_dim.to_vec(),
             d,
-            m_total,
-            prob,
-            alias,
+            m_total: acc,
         }
     }
 
@@ -171,6 +91,29 @@ impl RedGreenIndex {
     #[inline]
     pub fn cap_of(&self, i: usize) -> f64 {
         unsafe { *self.cap.get_unchecked(i) }
+    }
+
+    /// Map `r` in `[0, M)` to its cap interval and left boundary.
+    #[inline]
+    fn comp_of(&self, mut r: f64) -> (usize, f64) {
+        if r >= self.m_total {
+            r = f64::from_bits(self.m_total.to_bits() - 1);
+        }
+
+        // upper_bound: smallest j whose interval base is greater than r.
+        // Using upper_bound also skips zero-width intervals at duplicate bases.
+        let mut lo = 1usize;
+        let mut hi = self.base.len();
+        while lo < hi {
+            let mid = (lo + hi) >> 1;
+            if self.base[mid] > r {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let i = lo - 1;
+        (i, unsafe { *self.base.get_unchecked(i) })
     }
 
     /// Sample an interval i with P(i)=cap[i]/M, plus offset off ∈ [0,cap[i]).
@@ -196,35 +139,15 @@ impl RedGreenIndex {
     #[inline]
     fn sample_interval_and_offset_impl(&self, t_u: &Tab64Ers, key: u64) -> (usize, f64) {
         debug_assert!(self.d > 0);
+        debug_assert!(self.m_total > 0.0);
 
-        // u0 chooses the column in [0,d)
-        let mut u0 = to_unit(t_u.hash(key));
-        if u0 >= 1.0 {
-            u0 = f64::from_bits(0x3fefffffffffffff); // < 1.0
+        let mut u = to_unit(t_u.hash(key));
+        if u >= 1.0 {
+            u = f64::from_bits(0x3fefffffffffffff);
         }
-        let mut col = (u0 * (self.d as f64)) as usize;
-        if col >= self.d {
-            col = self.d - 1;
-        }
-
-        // u1 decides alias/keep
-        let mut u1 = to_unit(t_u.hash(key ^ 0x9e37_79b9_7f4a_7c15));
-        if u1 >= 1.0 {
-            u1 = f64::from_bits(0x3fefffffffffffff);
-        }
-        let i = if u1 < unsafe { *self.prob.get_unchecked(col) } {
-            col
-        } else {
-            unsafe { *self.alias.get_unchecked(col) as usize }
-        };
-
-        // u2 chooses offset within interval i
-        let mut u2 = to_unit(t_u.hash(key ^ 0xbf58_476d_1ce4_e5b9));
-        if u2 >= 1.0 {
-            u2 = f64::from_bits(0x3fefffffffffffff);
-        }
-        let off = self.cap_of(i) * u2;
-        (i, off)
+        let r = self.m_total * u;
+        let (i, base) = self.comp_of(r);
+        (i, r - base)
     }
 }
 
@@ -291,13 +214,14 @@ thread_local! {
 
 /// ERS (AAAI Algorithm 2): k independent fixed-length random sequences.
 /// For each j in 0..k, scan r_{j,1},...,r_{j,L}; take first green. If none, mark empty.
-/// Then densify empties by rotating to a non-empty bucket with a per-j random offset.
+/// Then densify empties with Algorithm 3's shared candidate sequence.
 pub struct ErsWmh {
     index: RedGreenIndex,
     // tabulation generators
-    t_u: Tab64Ers,   // U(0,1) for draws
-    t_id: Tab64Ers,  // ID from accepted draw r (via r.to_bits())
-    t_rot: Tab32Ers, // offset for densification
+    t_u: Tab64Ers,             // U(0,1) for r_{j,t}
+    t_id: Tab64Ers,            // ID from accepted draw r (via r.to_bits())
+    t_dense_bucket: Tab64Ers,  // densification hash: output bucket
+    t_dense_attempt: Tab64Ers, // densification hash: retry number
     k: usize,
 }
 
@@ -305,23 +229,82 @@ impl ErsWmh {
     /// `caps`: real-valued caps (tight upper bounds). `k`: number of hashes.
     pub fn new_mt(rng: &mut MtRng, caps: &[f64], k: u64) -> Self {
         let index = RedGreenIndex::from_caps(caps);
+        // Keep the original accepted-draw seed order for reproducibility.
         let t_u = tab64_ers_from_rng(rng);
         let t_id = tab64_ers_from_rng(rng);
-        let t_rot = tab32_ers_from_rng(rng);
+        let t_dense_bucket = tab64_ers_from_rng(rng);
+        let t_dense_attempt = tab64_ers_from_rng(rng);
         Self {
             index,
             t_u,
             t_id,
-            t_rot,
+            t_dense_bucket,
+            t_dense_attempt,
             k: k as usize,
         }
     }
 
     #[inline]
-    fn is_green_offset(&self, w_dense: &[f64], i: usize, off: f64) -> bool {
-        // green iff off <= x_i (since r = base[i] + off and green region is [base, base + x_i])
+    fn is_green(&self, w_dense: &[f64], r: f64) -> bool {
+        let (i, base) = self.index.comp_of(r);
         let xi = unsafe { *w_dense.get_unchecked(i) };
-        off <= xi
+        r <= base + xi
+    }
+
+    #[inline]
+    fn index_from_hash(hash: u64, len: usize) -> usize {
+        // Lemire's multiply-high range reduction avoids the modulo bias that is
+        // otherwise most visible when k is small.
+        ((hash as u128 * len as u128) >> 64) as usize
+    }
+
+    /// Algorithm 3's H(j, attempt), represented by two independently seeded
+    /// tabulation hashes. The same candidate sequence is therefore used for a
+    /// given output bucket in every vector sketched by this ERS instance.
+    #[inline]
+    fn densification_candidate(&self, j: usize, attempt: usize) -> usize {
+        let hash = self.t_dense_bucket.hash(j as u64) ^ self.t_dense_attempt.hash(attempt as u64);
+        Self::index_from_hash(hash, self.k)
+    }
+
+    fn densification_source(&self, original_nonempty: &[bool], j: usize) -> usize {
+        debug_assert_eq!(original_nonempty.len(), self.k);
+        debug_assert!(original_nonempty.iter().any(|&present| present));
+
+        // Independent uniform candidates need k/n_nonempty probes on average.
+        // 32k probes makes failure less likely than exp(-32), even with only
+        // one donor, while still bounding runtime for a defective hash family.
+        let max_probes = self.k.saturating_mul(32).max(32);
+        for attempt in 1..=max_probes {
+            let candidate = self.densification_candidate(j, attempt);
+            if original_nonempty[candidate] {
+                return candidate;
+            }
+        }
+
+        // Deterministic, consistent fallback: give every original donor a
+        // candidate-specific random priority and take the minimum. This path is
+        // practically unreachable, but unlike a linear scan it remains
+        // independent of the donor layout.
+        let bucket_hash = self.t_dense_bucket.hash(j as u64);
+        original_nonempty
+            .iter()
+            .enumerate()
+            .filter(|(_, present)| **present)
+            .min_by_key(|(candidate, _)| bucket_hash ^ self.t_dense_attempt.hash(*candidate as u64))
+            .map(|(candidate, _)| candidate)
+            .expect("at least one original ERS bucket is non-empty")
+    }
+
+    fn densify(&self, buckets: &mut [Option<(u64, u32)>]) {
+        let original_nonempty: Vec<bool> = buckets.iter().map(Option::is_some).collect();
+
+        for j in 0..self.k {
+            if !original_nonempty[j] {
+                let source = self.densification_source(&original_nonempty, j);
+                buckets[j] = buckets[source];
+            }
+        }
     }
 
     /// `max_attempts` is interpreted as L (sequence length per hash position).
@@ -349,7 +332,7 @@ impl ErsWmh {
             if m == 0.0 || mass == 0.0 || d == 0 {
                 let mut fallback = Vec::with_capacity(self.k);
                 for j in 0..self.k {
-                    let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
+                    let fake = self.t_dense_bucket.hash(j as u64) ^ j as u64;
                     fallback.push((fake, f64::INFINITY));
                 }
                 scratch.clear_touched();
@@ -359,18 +342,18 @@ impl ErsWmh {
 
             let w = &scratch.w;
 
-            // Fixed-length sequences; accept first green per j
+            // Fixed-length sequences r_{j,t}; accept first green per j.
             for j in 0..self.k {
                 for t in 1..=l_per_hash {
-                    // key = (j, t)
+                    // One uniform draw over the complete red-green line [0, M).
                     let key = ((j as u64) << 32) ^ (t as u64);
+                    let mut u = to_unit(self.t_u.hash(key));
+                    if u >= 1.0 {
+                        u = f64::from_bits(0x3fefffffffffffff);
+                    }
+                    let r = m * u;
 
-                    // O(1) interval sample + offset
-                    let (i, off) = self.index.sample_interval_and_offset(&self.t_u, key);
-
-                    if self.is_green_offset(w, i, off) {
-                        // Reconstruct r so ID hashing matches the previous definition.
-                        let r = self.index.base_of(i) + off;
+                    if self.is_green(w, r) {
                         let id = self.t_id.hash(r.to_bits());
                         buckets[j] = Some((id, t));
                         break;
@@ -382,7 +365,7 @@ impl ErsWmh {
             if buckets.iter().all(|b| b.is_none()) {
                 let mut fallback = Vec::with_capacity(self.k);
                 for j in 0..self.k {
-                    let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
+                    let fake = self.t_dense_bucket.hash(j as u64) ^ j as u64;
                     fallback.push((fake, f64::INFINITY));
                 }
                 scratch.clear_touched();
@@ -390,33 +373,7 @@ impl ErsWmh {
                 return;
             }
 
-            // Rotation densification
-            for j in 0..self.k {
-                if buckets[j].is_none() {
-                    // offset in {1,..,k-1}
-                    let offset = (self.t_rot.hash(j as u32) as usize
-                        % (self.k.saturating_sub(1)).max(1))
-                        + 1;
-                    let mut idx = (j + offset) % self.k;
-
-                    for _ in 0..(self.k - 1) {
-                        if let Some(val) = buckets[idx] {
-                            buckets[j] = Some(val);
-                            break;
-                        }
-                        idx += 1;
-                        if idx == self.k {
-                            idx = 0;
-                        }
-                    }
-
-                    // ultra-rare guard
-                    if buckets[j].is_none() {
-                        let fake = (self.t_rot.hash(j as u32) as u64) << 32 | (j as u64);
-                        buckets[j] = Some((fake, u32::MAX));
-                    }
-                }
-            }
+            self.densify(&mut buckets);
 
             // Convert to (id, rank) = (hash_id, time as f64)
             let mut result = Vec::with_capacity(self.k);
@@ -442,7 +399,7 @@ impl ErsWmh {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rng_utils::{MtRng, mt_from_seed};
+    use crate::rng_utils::{mt_from_seed, MtRng};
     use rand_core::RngCore;
 
     /// Generate a random weighted set with ids in [0, d)
@@ -518,6 +475,108 @@ mod tests {
             }
         }
         m
+    }
+
+    #[test]
+    fn ers_sparse_entry_order_is_not_part_of_the_vector() {
+        let caps = vec![1.0, 0.8, 0.6, 0.4];
+        let ordered = vec![(0, 0.75), (1, 0.5), (2, 0.25), (3, 0.125)];
+        let reversed = ordered.iter().copied().rev().collect::<Vec<_>>();
+        let mut hash_rng = mt_from_seed(0xe255_2001);
+        let ers = ErsWmh::new_mt(&mut hash_rng, &caps, 4096);
+
+        assert_eq!(
+            ers.sketch(&ordered, Some(16)),
+            ers.sketch(&reversed, Some(16))
+        );
+    }
+
+    #[test]
+    fn algorithm3_selects_original_donors_uniformly() {
+        let k = 4096usize;
+        let mut hash_rng = mt_from_seed(0xe255_2002);
+        let ers = ErsWmh::new_mt(&mut hash_rng, &[1.0], k as u64);
+        let mut original_nonempty = vec![false; k];
+        original_nonempty[0] = true;
+        original_nonempty[1] = true;
+
+        let mut counts = [0usize; 2];
+        for j in 2..k {
+            counts[ers.densification_source(&original_nonempty, j)] += 1;
+        }
+
+        let expected = (k - 2) as f64 / 2.0;
+        for (source, observed) in counts.into_iter().enumerate() {
+            let relative_error = (observed as f64 - expected).abs() / expected;
+            assert!(
+                relative_error < 0.06,
+                "source={source}, observed={observed}, expected={expected}, relative_error={relative_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn algorithm3_never_uses_a_densified_bucket_as_a_donor() {
+        let mut hash_rng = mt_from_seed(0xe255_2003);
+        let ers = ErsWmh::new_mt(&mut hash_rng, &[1.0], 128);
+        let donor_a = (0xa11c_e001, 3);
+        let donor_b = (0xb22d_f002, 7);
+        let mut buckets = vec![None; 128];
+        buckets[11] = Some(donor_a);
+        buckets[97] = Some(donor_b);
+        let original_nonempty: Vec<bool> = buckets.iter().map(Option::is_some).collect();
+
+        for j in 0..buckets.len() {
+            if !original_nonempty[j] {
+                let source = ers.densification_source(&original_nonempty, j);
+                assert!(
+                    original_nonempty[source],
+                    "bucket {j} selected source {source}"
+                );
+            }
+        }
+
+        ers.densify(&mut buckets);
+
+        assert!(buckets
+            .iter()
+            .all(|bucket| matches!(bucket, Some(v) if *v == donor_a || *v == donor_b)));
+    }
+
+    #[test]
+    fn ers_tracks_exact_weighted_jaccard_across_hash_seeds() {
+        use crate::similarity::jaccard_similarity;
+
+        let x = vec![(0, 0.5)];
+        let y = vec![(0, 0.25), (1, 0.25)];
+        let k = 4096usize;
+        let l = 16u64;
+        let seeds = 32u64;
+        let expected = jaccard_similarity(&x, &y);
+        let standard_error = (expected * (1.0 - expected) / (k as f64 * seeds as f64)).sqrt();
+        let tolerance = 6.0 * standard_error + 0.006;
+
+        // Loose caps leave roughly 1% of buckets empty at L=16, exercising
+        // densification and verifying that correctness depends on drawing from
+        // the full M=sum(m_i), not on every cap being tight. Average independent
+        // hash seeds because simple tabulation does not concentrate on every
+        // fixed low-dimensional input.
+        for (label, caps) in [("tight", vec![0.5, 0.25]), ("loose", vec![1.0, 1.0])] {
+            let mut hits = 0usize;
+            for seed in 0..seeds {
+                let mut hash_rng = mt_from_seed(0xe255_2004 + seed);
+                let ers = ErsWmh::new_mt(&mut hash_rng, &caps, k as u64);
+                let sk_x = ers.sketch(&x, Some(l));
+                let sk_y = ers.sketch(&y, Some(l));
+                hits += sk_x.iter().zip(&sk_y).filter(|(a, b)| a.0 == b.0).count();
+            }
+            let observed = hits as f64 / (k as f64 * seeds as f64);
+
+            assert!(
+                (observed - expected).abs() <= tolerance,
+                "{label} caps: exact Jaccard={expected:.6}, observed={observed:.6}, tolerance={tolerance:.6}"
+            );
+        }
     }
 
     #[test]

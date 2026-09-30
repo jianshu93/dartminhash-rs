@@ -60,14 +60,14 @@ pub fn mixed_tab32_from_rng<R: RngCore>(rng: &mut R) -> Tab32Mixed {
 #[cfg(feature = "mixed_tab")]
 pub fn mixed_tab64_from_rng<R: RngCore>(rng: &mut R) -> Tab64Mixed {
     let mut first_table = vec![vec![0u128; 256]; 8];
-    let mut second_table = vec![vec![0u64; 256]; 4];
+    let mut second_table = vec![vec![0u64; 256]; 8];
 
     for i in 0..8 {
         for j in 0..256 {
             first_table[i][j] = ((rng.next_u64() as u128) << 64) | (rng.next_u64() as u128);
         }
     }
-    for i in 0..4 {
+    for i in 0..8 {
         for j in 0..256 {
             second_table[i][j] = rng.next_u64();
         }
